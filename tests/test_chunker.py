@@ -170,6 +170,46 @@ export class Panel extends React.Component<Props> {
     assert "Panel.render" in symbols
 
 
+def test_duplicate_function_in_one_file_gets_unique_ids(tmp_path: Path) -> None:
+    """Real-world bug: a JS file copy-pastes the same `pad()` definition three
+    times. Old chunk_id formula used `path|symbol|text` only, so all three
+    collided to the same id and Chroma's upsert rejected the batch with
+    DuplicateIDError. start_line is now part of the hash so identical content
+    at different positions gets unique ids."""
+    p = tmp_path / "dup.js"
+    p.write_text(
+        """\
+function before() { return 1; }
+
+function pad(n) {
+    return ('0000' + n).slice(-4);
+}
+
+function middle() { return 2; }
+
+function pad(n) {
+    return ('0000' + n).slice(-4);
+}
+
+function after() { return 3; }
+
+function pad(n) {
+    return ('0000' + n).slice(-4);
+}
+""",
+        encoding="utf-8",
+    )
+    ch = TreeSitterChunker(min_chars=10, max_chars=2000)
+    chunks = ch.chunk_file("repo", p, "dup.js", "javascript")
+    pad_chunks = [c for c in chunks if c.symbol == "pad"]
+    assert len(pad_chunks) == 3, f"expected 3 pad chunks, got {len(pad_chunks)}"
+    ids = {c.id for c in pad_chunks}
+    assert len(ids) == 3, f"all pad chunks should have unique ids, got {ids}"
+    # Sanity: same content but different start_line is what makes them unique.
+    assert {c.text for c in pad_chunks} == {pad_chunks[0].text}
+    assert len({c.start_line for c in pad_chunks}) == 3
+
+
 def test_javascript_chunker_emits_classes_and_functions(tmp_path: Path) -> None:
     p = tmp_path / "m.js"
     p.write_text(

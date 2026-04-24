@@ -137,15 +137,16 @@ class TreeSitterChunker:
                 name = self._symbol_name(child, src) or f"<anon:{t}>"
                 full = f"{parent}.{name}" if parent else name
                 text = self._clip(src[child.start_byte : child.end_byte].decode("utf-8", "replace"))
+                start_line = child.start_point[0] + 1
                 if len(text) >= self._min:
                     out.append(Chunk(
-                        id=chunk_id(repo, rel_path, full, text),
+                        id=chunk_id(repo, rel_path, full, text, start_line),
                         repo=repo,
                         path=rel_path,
                         language=language,
                         symbol=full,
                         kind=kind,
-                        start_line=child.start_point[0] + 1,
+                        start_line=start_line,
                         end_line=child.end_point[0] + 1,
                         text=text,
                     ))
@@ -203,7 +204,7 @@ class TreeSitterChunker:
                 chunk_text = "".join(buf)
                 window_sym = f"window:{start_line}"
                 out.append(Chunk(
-                    id=chunk_id(repo, rel_path, window_sym, chunk_text),
+                    id=chunk_id(repo, rel_path, window_sym, chunk_text, start_line),
                     repo=repo,
                     path=rel_path,
                     language=language,
@@ -223,7 +224,7 @@ class TreeSitterChunker:
             chunk_text = "".join(buf)
             window_sym = f"window:{start_line}"
             out.append(Chunk(
-                id=chunk_id(repo, rel_path, window_sym, chunk_text),
+                id=chunk_id(repo, rel_path, window_sym, chunk_text, start_line),
                 repo=repo,
                 path=rel_path,
                 language=language,

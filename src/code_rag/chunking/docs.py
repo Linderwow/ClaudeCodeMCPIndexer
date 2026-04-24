@@ -103,7 +103,8 @@ class DocChunker:
             for idx, w in enumerate(self._split_text_windows(sec.body), start=1):
                 sym = sec.trail + (f"#{idx}" if idx > 1 else "")
                 out.append(Chunk(
-                    id=chunk_id(repo, rel_path, sym or f"line:{sec.start_line}", w),
+                    id=chunk_id(repo, rel_path, sym or f"line:{sec.start_line}", w,
+                                sec.start_line),
                     repo=repo, path=rel_path, language="markdown",
                     symbol=sym or None, kind=ChunkKind.DOC,
                     start_line=sec.start_line, end_line=sec.end_line, text=w,
@@ -137,7 +138,7 @@ class DocChunker:
             for idx, w in enumerate(windows, start=1):
                 sym = f"page:{page_no}#{idx}"
                 out.append(Chunk(
-                    id=chunk_id(repo, rel_path, sym, w),
+                    id=chunk_id(repo, rel_path, sym, w, page_no),
                     repo=repo, path=rel_path, language="pdf",
                     symbol=sym, kind=ChunkKind.DOC,
                     start_line=page_no, end_line=page_no, text=w,
@@ -169,7 +170,7 @@ class DocChunker:
         for idx, w in enumerate(self._split_text_windows(text), start=1):
             sym = f"window:{idx}"
             out.append(Chunk(
-                id=chunk_id(repo, rel_path, sym, w),
+                id=chunk_id(repo, rel_path, sym, w, idx),
                 repo=repo, path=rel_path, language=language,
                 symbol=sym, kind=ChunkKind.DOC,
                 start_line=1, end_line=1, text=w,
