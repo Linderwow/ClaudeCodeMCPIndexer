@@ -1,0 +1,31 @@
+# --- code-rag runtime state --------------------------------------------------
+data/
+logs/
+
+# --- per-machine config (template committed as config.example.toml) ----------
+config.toml
+*.bak
+*.bak_*
+
+# --- python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- editors / os ------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+
+# --- Claude Code local state -------------------------------------------------
+.claude/

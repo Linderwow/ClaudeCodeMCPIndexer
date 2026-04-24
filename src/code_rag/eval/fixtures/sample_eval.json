@@ -1,0 +1,14 @@
+[
+  {
+    "query": "how is OnBarUpdate wired in the MNQAlpha strategy",
+    "expected": [{"path": "MNQAlpha.cs"}]
+  },
+  {
+    "query": "place a market order from a strategy",
+    "expected": [{"path": "MNQAlpha.cs"}]
+  },
+  {
+    "query": "compute ATR indicator value",
+    "expected": []
+  }
+]

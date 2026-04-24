@@ -1,0 +1,110 @@
+# code-rag-mcp example config — COMMITTED to git.
+#
+# First-time setup:
+#   1. cp config.example.toml config.toml
+#   2. Edit [paths].roots to point at YOUR codebases
+#   3. Leave data_dir / log_dir relative — they live inside the repo tree and
+#      are gitignored (data/ and logs/).
+#
+# The real config.toml is gitignored so per-machine paths never enter history.
+# Override the active config file via $CODE_RAG_CONFIG at runtime.
+
+[paths]
+# Roots that get indexed. Absolute paths. Forward slashes are OK on Windows.
+roots = [
+    # "C:/path/to/your/codebase",
+    # "/home/you/projects/my-repo",
+]
+# Data dir holds Chroma, Kuzu, SQLite-FTS, index metadata. Must be OUTSIDE every root.
+data_dir = "./data"
+log_dir  = "./logs"
+
+[ignore]
+# gitignore-style globs applied on top of any .gitignore found in a root.
+globs = [
+    # --- VCS / editor / OS noise ---
+    "**/.git/**",
+    "**/.vs/**",
+    "**/.idea/**",
+    "**/.vscode/**",
+
+    # --- Python build/dep ---
+    "**/__pycache__/**",
+    "**/*.pyc",
+    "**/.venv/**",
+    "**/venv/**",
+    "**/*.egg-info/**",
+
+    # --- .NET build outputs ---
+    "**/bin/**",
+    "**/obj/**",
+    "**/TestResults/**",
+    "**/packages/**",
+
+    # --- Node / web build outputs ---
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/build/**",
+    "**/out/**",
+    "**/.angular/**",
+    "**/.next/**",
+    "**/.nuxt/**",
+    "**/coverage/**",
+    "**/playwright-report/**",
+    "**/test-results/**",
+
+    # --- Minified / sourcemap / lockfiles ---
+    "**/*.min.js",
+    "**/*.min.css",
+    "**/*.map",
+    "**/package-lock.json",
+    "**/yarn.lock",
+    "**/pnpm-lock.yaml",
+]
+
+[embedder]
+kind      = "lm_studio"
+base_url  = "http://localhost:1234/v1"
+# LM Studio reports the downloaded model under this id (verify with `lms ls`).
+model     = "text-embedding-qwen3-embedding-4b"
+# Dimension is probed on first use and stamped into index metadata. Mismatch = refuse to query.
+dim       = 0
+timeout_s = 60
+batch     = 32
+
+[reranker]
+kind      = "lm_studio"
+base_url  = "http://localhost:1234/v1"
+# Reranker is OPTIONAL — leave the model blank or set to an unloaded model and
+# search falls back to no-op ordering. Download with e.g.
+#   lms get "https://huggingface.co/Qwen/Qwen3-Reranker-4B-GGUF"
+model     = "qwen3-reranker-4b"
+top_k_in  = 50
+top_k_out = 8
+timeout_s = 60
+
+[vector_store]
+kind       = "chroma"
+# Collection prefix. The actual Chroma collection name is this + a hash of the
+# embedder model/dim, so swapping embedders never pollutes a shared collection.
+collection = "code_rag_v1"
+
+[graph_store]
+kind = "kuzu"
+db   = "graph"       # subdir under data_dir
+
+[lexical_store]
+kind = "sqlite_fts5"
+db   = "fts.db"      # under data_dir
+
+[chunker]
+# AST-aware chunk size guardrails (chars, not tokens — tokens measured post-hoc).
+min_chars     = 80
+max_chars     = 2400
+overlap_chars = 0
+
+[watcher]
+debounce_ms = 500
+
+[mcp]
+name = "code-rag"

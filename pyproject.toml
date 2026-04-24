@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "code-rag-mcp"
+version = "0.1.0"
+description = "Local code + doc RAG exposed as an MCP server for Claude Code"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "Alex Akulov" }]
+dependencies = [
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "structlog>=24.1",
+    "click>=8.1",
+    "tomli>=2.0;python_version<'3.11'",
+    "blake3>=0.4",
+    "tree-sitter>=0.22",
+    "tree-sitter-python>=0.21",
+    "tree-sitter-c-sharp>=0.21",
+    "tree-sitter-typescript>=0.23",
+    "tree-sitter-javascript>=0.23",
+    "chromadb>=0.5",
+    "kuzu>=0.4",
+    "watchdog>=4.0",
+    "mcp>=1.0",
+    "pypdf>=4.2",
+    "python-docx>=1.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+code-rag = "code_rag.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = true
+
+# The mcp SDK's decorators are untyped in the published stubs. Rather than
+# weakening strictness for the whole tree, we scope the relaxation to the one
+# module that wires them.
+[[tool.mypy.overrides]]
+module = "code_rag.mcp_server.server"
+disallow_untyped_decorators = false
