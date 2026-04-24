@@ -100,6 +100,38 @@ class Settings(BaseModel):
     def index_meta_path(self) -> Path:
         return self.paths.data_dir / "index_meta.json"
 
+    @property
+    def dynamic_roots_path(self) -> Path:
+        """Registry of runtime-added roots (auto-discovered workspaces)."""
+        return self.paths.data_dir / "dynamic_roots.json"
+
+    def all_roots(self) -> list[Path]:
+        """Union of the user's curated `config.toml` roots and any
+        dynamically-added roots persisted to `dynamic_roots.json`.
+
+        The returned list is deduplicated (resolved-path equality) and only
+        includes directories that currently exist on disk.
+        """
+        # Lazy import: dynamic_roots imports config.logging which can loop
+        # during config module init.
+        from code_rag.dynamic_roots import DynamicRoots
+        seen: set[Path] = set()
+        out: list[Path] = []
+        for r in self.paths.roots:
+            try:
+                rr = r.resolve()
+            except OSError:
+                continue
+            if rr not in seen and rr.exists() and rr.is_dir():
+                seen.add(rr)
+                out.append(rr)
+        dyn = DynamicRoots.load(self.dynamic_roots_path)
+        for rr in dyn.paths():
+            if rr not in seen:
+                seen.add(rr)
+                out.append(rr)
+        return out
+
 
 def _config_path() -> Path:
     env = os.environ.get("CODE_RAG_CONFIG")

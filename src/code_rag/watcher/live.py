@@ -84,10 +84,13 @@ class LiveWatcher:
         """Start the observer, run the drain loop, stop gracefully on cancel."""
         self._observer = Observer()
         handler = _Handler(self._queue)
-        for root in self._settings.paths.roots:
+        # Union of config roots + dynamic (auto-discovered) roots. A root that
+        # vanishes between startups is skipped (watchdog crashes on missing).
+        all_roots = [r for r in self._settings.all_roots() if r.exists()]
+        for root in all_roots:
             self._observer.schedule(handler, str(root), recursive=True)
         self._observer.start()
-        log.info("watcher.started", roots=[str(r) for r in self._settings.paths.roots])
+        log.info("watcher.started", roots=[str(r) for r in all_roots])
 
         try:
             await self._drain()
@@ -184,7 +187,7 @@ class LiveWatcher:
 
     def _rel_path(self, abs_path: Path) -> str | None:
         ap = abs_path.resolve()
-        for r in self._settings.paths.roots:
+        for r in self._settings.all_roots():
             try:
                 return ap.relative_to(r.resolve()).as_posix()
             except ValueError:

@@ -33,8 +33,31 @@ Private — proprietary. No code leaves the machine.
 | `get_callees` | What does this symbol call — 1-hop forward call edge |
 | `get_file_context` | A file's symbols + 1-hop graph neighborhood |
 | `index_stats` | Metadata + chunk counts + last-updated |
+| `ensure_workspace_indexed` | Auto-register + background-index a repo you just opened |
 
-The MCP server is **read-only**. Writes (reindex, doc ingestion) happen via the CLI or the autostart watcher — keeps lock contention on Kuzu's single writer clean.
+The MCP server is read-only on the three stores. `ensure_workspace_indexed` is the one exception: it appends to a dedicated `dynamic_roots.json` registry (separate from the stores) and spawns a detached `code-rag index --path <p>` subprocess for the actual writes — the live watcher remains the sole in-process writer.
+
+---
+
+## Auto-discovery: any repo Claude opens gets indexed automatically
+
+You don't have to pre-register every codebase in `config.toml`. The first time Claude Code searches in a new repo, its system prompt (built from the MCP tool descriptions) tells it to call `ensure_workspace_indexed(<repo-root>)`. That:
+
+1. Appends the path to `data/dynamic_roots.json` (persistent across reboots).
+2. Spawns a detached `code-rag index --path <path>` process that embeds the new repo in the background.
+3. Returns immediately so `search_code` keeps serving whatever's already indexed.
+
+On the next logon, the autostart watcher reads both `config.toml` roots **and** `dynamic_roots.json` and watches them all — so edits in any auto-discovered repo trigger incremental reindex, just like curated roots.
+
+**Manage dynamic roots from the CLI:**
+
+```powershell
+code-rag roots list                           # show config + dynamic roots
+code-rag roots remove C:/path/to/old-project  # drop a dynamic root
+code-rag roots prune --days 30                # drop any dynamic root not used in 30 days
+```
+
+**Opt-out:** don't want auto-discovery? The feature is tool-driven — Claude only calls `ensure_workspace_indexed` if its reasoning decides the current workspace isn't indexed. If you never want it to fire, you can remove the tool from `TOOLS` in `src/code_rag/mcp_server/server.py` (or ignore the registry entries with `roots remove`). No opt-out flag — by design, "auto" is the default.
 
 ---
 

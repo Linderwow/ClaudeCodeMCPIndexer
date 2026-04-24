@@ -97,16 +97,6 @@ def remove_root(ctx: click.Context, path: Path) -> None:
         click.echo(f"not in config: {path}")
 
 
-@main.command()
-@click.pass_context
-def roots(ctx: click.Context) -> None:
-    """List indexed codebase roots."""
-    settings = ctx.obj["settings"]
-    for r in settings.paths.roots:
-        mark = "OK " if r.exists() else "MISS"
-        click.echo(f"  [{mark}] {r}")
-
-
 def _resolved_config_path(ctx: click.Context) -> Path:
     """Return the config.toml path actually being used (env override or default)."""
     import os
@@ -737,3 +727,63 @@ def index_stats(ctx: click.Context) -> None:
             click.echo(f"chunks: {coll.count()}")
         except Exception as e:
             click.echo(f"chunks: (unavailable: {e})")
+
+
+@main.group()
+def roots() -> None:
+    """Manage indexing roots — both the curated `config.toml` set and the
+    dynamically auto-added set (via MCP `ensure_workspace_indexed`).
+    """
+
+
+@roots.command("list")
+@click.pass_context
+def roots_list(ctx: click.Context) -> None:
+    """List all active roots (config + dynamic), tagged by origin."""
+    from code_rag.dynamic_roots import DynamicRoots
+    settings = ctx.obj["settings"]
+    click.echo("# config.toml roots")
+    for r in settings.paths.roots:
+        click.echo(f"  [config]   {r.as_posix()}")
+    dyn = DynamicRoots.load(settings.dynamic_roots_path)
+    if not dyn.entries:
+        click.echo("# dynamic roots: (none)")
+        return
+    click.echo("# dynamic roots")
+    for e in dyn.entries:
+        exists = "✓" if e.path.exists() else "✗"
+        click.echo(f"  [dynamic]  {e.path.as_posix()}  "
+                   f"{exists}  added={e.added_at}  last_used={e.last_used_at}")
+
+
+@roots.command("remove")
+@click.argument("path", type=click.Path(path_type=Path))
+@click.pass_context
+def roots_remove(ctx: click.Context, path: Path) -> None:
+    """Remove a dynamic root. Config roots must be edited in config.toml."""
+    from code_rag.dynamic_roots import DynamicRoots
+    settings = ctx.obj["settings"]
+    dyn = DynamicRoots.load(settings.dynamic_roots_path)
+    if dyn.remove(path):
+        click.echo(f"removed dynamic root: {path.resolve().as_posix()}")
+    else:
+        click.echo(f"not in dynamic roots: {path}", err=True)
+        sys.exit(1)
+
+
+@roots.command("prune")
+@click.option("--days", type=int, default=30, show_default=True,
+              help="Prune dynamic roots not used in this many days.")
+@click.pass_context
+def roots_prune(ctx: click.Context, days: int) -> None:
+    """Prune stale dynamic roots (by last_used_at timestamp)."""
+    from code_rag.dynamic_roots import DynamicRoots
+    settings = ctx.obj["settings"]
+    dyn = DynamicRoots.load(settings.dynamic_roots_path)
+    pruned = dyn.prune_stale(days)
+    if not pruned:
+        click.echo(f"no dynamic roots older than {days} days")
+        return
+    for p in pruned:
+        click.echo(f"pruned: {p.as_posix()}")
+    click.echo(f"total pruned: {len(pruned)}")

@@ -1,16 +1,21 @@
 """MCP server exposing the code-rag tools over stdio.
 
 Registered tools (must match `_HANDLERS` and `TOOLS` below):
-  * search_code       — hybrid search (vector + lexical + rerank)
-  * get_chunk_text    — fetch full text of a truncated chunk by id
-  * get_symbol        — locate a symbol by name
-  * get_callers       — graph walk: who calls X
-  * get_callees       — graph walk: what does X call
-  * get_file_context  — file's symbols + immediate graph neighborhood
-  * index_stats       — counts + metadata + last-updated
+  * search_code              — hybrid search (vector + lexical + rerank)
+  * get_chunk_text           — fetch full text of a truncated chunk by id
+  * get_symbol               — locate a symbol by name
+  * get_callers              — graph walk: who calls X
+  * get_callees              — graph walk: what does X call
+  * get_file_context         — file's symbols + immediate graph neighborhood
+  * index_stats              — counts + metadata + last-updated
+  * ensure_workspace_indexed — auto-register a new repo & kick off indexing
 
-Writes (reindex, doc ingestion) are NOT exposed here — the MCP server is
-read-only by design. The autostart watcher is the single writer.
+The MCP server itself is READ-ONLY on the three stores. The one exception
+is `ensure_workspace_indexed`, which:
+  (a) appends to `data/dynamic_roots.json` (its own file — not a store), and
+  (b) spawns a DETACHED `code-rag index --path <p>` subprocess that opens
+      the stores in its own process. The live watcher remains the sole
+      in-process writer.
 
 All tools return structured JSON; the client (Claude Code) sees concise text
 blocks and can pass them straight into a prompt.
@@ -19,6 +24,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+from pathlib import Path
 from typing import Any
 
 from mcp.server import Server
@@ -60,7 +67,13 @@ TOOLS: list[Tool] = [
             "a `match_reason` explaining why each hit was selected. Use free-form "
             "natural-language queries ('where does the strategy size positions?') "
             "as readily as identifiers ('OnBarUpdate'). Only fall back to grep "
-            "if `no_confident_match: true` comes back."
+            "if `no_confident_match: true` comes back.\n\n"
+            "FIRST-TIME-IN-A-REPO: if you're working in a repository whose "
+            "root you don't recognize from prior searches, call "
+            "`ensure_workspace_indexed` with the repo's absolute path ONCE at "
+            "the start of the session. That auto-registers the repo for "
+            "ongoing watching and kicks off a background index. Subsequent "
+            "`search_code` calls will see results as chunks land."
         ),
         inputSchema={
             "type": "object",
@@ -167,6 +180,34 @@ TOOLS: list[Tool] = [
         name="index_stats",
         description="Return index metadata, chunk counts, and last-updated timestamp.",
         inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="ensure_workspace_indexed",
+        description=(
+            "Auto-register a repository for indexing. CALL THIS ONCE PER "
+            "SESSION the first time you need to search a repo that isn't "
+            "already indexed — subsequent calls for the same path are no-ops. "
+            "Pass the repo's ABSOLUTE root directory (the one containing the "
+            "`.git` folder or top-level project files). The tool:\n"
+            "  1. Checks if the path is already under an indexed root — returns immediately if so.\n"
+            "  2. Registers the path in the dynamic-roots file (survives reboots).\n"
+            "  3. Kicks off a background `code-rag index --path <path>` subprocess.\n"
+            "  4. Returns a status object with `already_indexed`, `registered`, and `background_pid`.\n"
+            "The live watcher picks up the new root on its next restart; until then the "
+            "background subprocess owns the initial ingest. `search_code` continues to "
+            "work against whatever is already indexed while this runs. Safe to call "
+            "repeatedly — idempotent."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute path to the repo root to auto-index.",
+                },
+            },
+            "required": ["path"],
+        },
     ),
 ]
 
@@ -388,14 +429,102 @@ async def _tool_index_stats(res: ServerResources, args: dict[str, Any]) -> dict[
     }
 
 
+async def _tool_ensure_workspace_indexed(
+    res: ServerResources, args: dict[str, Any],
+) -> dict[str, Any]:
+    """Register `path` as a dynamic root and kick off a background index.
+
+    Idempotent: if the path is already under a configured or dynamic root,
+    we short-circuit. Otherwise we append to `dynamic_roots.json` and spawn
+    a detached `code-rag index --path <path>` subprocess that writes into
+    the same stores — guarded by the existing single-writer semantics on
+    Kuzu (caller is expected to stop the live watcher first if running a
+    large bulk ingest; incremental add of a single repo usually coexists).
+    """
+    import subprocess
+    import sys
+
+    from code_rag.dynamic_roots import DynamicRoots
+
+    raw = str(args.get("path", "")).strip()
+    if not raw:
+        return {"error": "path is required"}
+    path = Path(raw).resolve()
+    if not path.exists() or not path.is_dir():
+        return {"error": f"path does not exist or is not a directory: {path}"}
+
+    # Already under any configured or dynamic root? Nothing to do.
+    for r in res.settings.all_roots():
+        try:
+            path.relative_to(r.resolve())
+            return {
+                "already_indexed": True,
+                "registered":      False,
+                "path":             path.as_posix(),
+                "matched_root":     r.as_posix(),
+                "note":             "path is already under an indexed root",
+            }
+        except ValueError:
+            continue
+
+    # Register in the persistent dynamic-roots file.
+    dyn = DynamicRoots.load(res.settings.dynamic_roots_path)
+    added = dyn.add(path, source="mcp.ensure_workspace_indexed")
+
+    # Spawn a detached indexing subprocess. We use sys.executable to stay
+    # inside the same venv; `-m code_rag index --path` handles its own
+    # lifecycle (opens stores, reindexes, closes). stdout/err redirected
+    # to a dedicated log so the MCP stdio stream stays clean.
+    log_file = res.settings.paths.log_dir / "auto_index.log"
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    # Ensure the subprocess picks up the same config the MCP server did.
+    if "CODE_RAG_CONFIG" not in env:
+        # The active config may not be advertised via env; best-effort fallback
+        # to the default lookup.
+        pass
+
+    # On Windows, CREATE_NEW_PROCESS_GROUP + DETACHED_PROCESS lets the child
+    # survive independently of this MCP server. On POSIX, start_new_session
+    # achieves the same via setsid.
+    popen_kwargs: dict[str, Any] = {
+        "stdout": open(log_file, "a", encoding="utf-8"),  # noqa: SIM115
+        "stderr": subprocess.STDOUT,
+        "stdin":  subprocess.DEVNULL,
+        "env":    env,
+    }
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = (
+            subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008  # DETACHED_PROCESS
+        )
+    else:
+        popen_kwargs["start_new_session"] = True
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "code_rag", "index", "--path", str(path)],
+        **popen_kwargs,
+    )
+    log.info("mcp.ensure_workspace_indexed.spawned",
+             path=path.as_posix(), pid=proc.pid, added=added)
+    return {
+        "already_indexed": False,
+        "registered":      added,
+        "path":            path.as_posix(),
+        "background_pid":  proc.pid,
+        "log_file":        str(log_file),
+        "note":            ("indexing started in background; `search_code` "
+                            "will see results as chunks land"),
+    }
+
+
 _HANDLERS = {
-    "search_code":      _tool_search_code,
-    "get_chunk_text":   _tool_get_chunk_text,
-    "get_symbol":       _tool_get_symbol,
-    "get_callers":      _tool_get_callers,
-    "get_callees":      _tool_get_callees,
-    "get_file_context": _tool_get_file_context,
-    "index_stats":      _tool_index_stats,
+    "search_code":               _tool_search_code,
+    "get_chunk_text":            _tool_get_chunk_text,
+    "get_symbol":                _tool_get_symbol,
+    "get_callers":               _tool_get_callers,
+    "get_callees":               _tool_get_callees,
+    "get_file_context":          _tool_get_file_context,
+    "index_stats":               _tool_index_stats,
+    "ensure_workspace_indexed":  _tool_ensure_workspace_indexed,
 }
 
 

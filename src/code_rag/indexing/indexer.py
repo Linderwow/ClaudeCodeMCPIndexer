@@ -76,7 +76,10 @@ class Indexer:
             min_chars=settings.chunker.min_chars,
             max_chars=settings.chunker.max_chars,
         )
-        self._walker = Walker(settings.paths.roots, settings.ignore.globs)
+        # Walker sees the UNION of config.toml roots + dynamically-added roots
+        # (auto-discovered workspaces). Keeping the file list dynamic here is
+        # what makes `ensure_workspace_indexed` + live watcher work seamlessly.
+        self._walker = Walker(settings.all_roots(), settings.ignore.globs)
 
     # ---- public -------------------------------------------------------------
 
@@ -142,7 +145,7 @@ class Indexer:
         is_doc: bool,
     ) -> None:
         stats.files_seen += 1
-        rel, repo = _rel_and_repo(abs_path, self._settings.paths.roots)
+        rel, repo = _rel_and_repo(abs_path, self._settings.all_roots())
 
         # CPU-bound parse goes off the event loop.
         try:
@@ -222,13 +225,25 @@ class Indexer:
 
 
 def _rel_and_repo(abs_path: Path, roots: Iterable[Path]) -> tuple[str, str]:
-    """Return (posix-relative-path-from-matching-root, root_name)."""
+    """Return (posix-relative-path-from-matching-root, root_name).
+
+    Longest-prefix wins: if `abs_path` is under multiple roots (rare — e.g.
+    one root is an ancestor of another), we attribute it to the most specific
+    root so the relative path and `repo` label are as narrow as possible.
+    """
     ap = abs_path.resolve()
+    best: tuple[str, str] | None = None
+    best_len = -1
     for r in roots:
-        r_res = r.resolve()
         try:
+            r_res = r.resolve()
             rel = ap.relative_to(r_res)
-        except ValueError:
+        except (OSError, ValueError):
             continue
-        return rel.as_posix(), r_res.name
+        depth = len(r_res.parts)
+        if depth > best_len:
+            best = (rel.as_posix(), r_res.name)
+            best_len = depth
+    if best is not None:
+        return best
     return ap.as_posix(), "unknown"
