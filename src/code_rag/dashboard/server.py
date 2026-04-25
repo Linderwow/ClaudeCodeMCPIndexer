@@ -23,9 +23,10 @@ from typing import Any
 
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse
+from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
@@ -130,6 +131,22 @@ async def _maybe_json(req: Request) -> dict[str, Any]:
 # ---- app factory ------------------------------------------------------------
 
 
+class _NoCacheStaticMiddleware(BaseHTTPMiddleware):
+    """Serve / and /static/* with no-cache so the browser always fetches the
+    latest JS/CSS after a code-rag update. The dashboard payload is tiny
+    (~10 KB total); the cost of skipping cache is negligible. Without this
+    Chrome happily serves the stale app.js for hours after we ship a fix."""
+
+    async def dispatch(self, request: Request, call_next):  # type: ignore[no-untyped-def]
+        resp: Response = await call_next(request)
+        path = request.url.path
+        if path == "/" or path.startswith("/static/"):
+            resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            resp.headers["Pragma"] = "no-cache"
+            resp.headers["Expires"] = "0"
+        return resp
+
+
 def build_app() -> Starlette:
     routes = [
         Route("/",                       endpoint=root,            methods=["GET"]),
@@ -154,6 +171,7 @@ def build_app() -> Starlette:
             allow_methods=["GET", "POST"],
             allow_headers=["*"],
         ),
+        Middleware(_NoCacheStaticMiddleware),
     ]
     return Starlette(routes=routes, middleware=middleware)
 

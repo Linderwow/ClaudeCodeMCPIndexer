@@ -507,8 +507,21 @@ def dashboard(ctx: click.Context, host: str, port: int, no_browser: bool) -> Non
     Big START/STOP buttons for LM Studio + the watcher + loaded models. Polls
     /api/status every 2s so the UI is always fresh. Ctrl-C in this terminal
     to stop the dashboard server (the actual stack keeps running).
+
+    Under pythonw (no attached console), uvicorn would crash trying to write
+    to a None stderr. We detect that case and route stdout+stderr to a log
+    file in `<data_dir>/../logs/dashboard.log` so the autostart task stays up.
     """
-    _ = ctx  # Settings are loaded per-request inside the server module.
+    settings = ctx.obj["settings"]
+    if sys.stdout is None or sys.stderr is None:
+        log_path = settings.paths.log_dir / "dashboard.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        # noqa: SIM115 -- we deliberately keep the file open for the lifetime
+        # of the dashboard process so uvicorn's per-request log lines flush.
+        log_file = log_path.open("a", encoding="utf-8", buffering=1)  # noqa: SIM115
+        sys.stdout = log_file
+        sys.stderr = log_file
+
     from code_rag.dashboard.server import serve
     click.echo(f"code-rag dashboard -> http://{host}:{port}/")
     click.echo("Ctrl-C to stop (the LM Studio + watcher stack keeps running).")

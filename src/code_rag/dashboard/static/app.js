@@ -38,7 +38,13 @@
     return r.json();
   }
 
-  // ---- button busy state ----
+  // ---- button visibility / busy state ----
+  function toggleButton(id, show) {
+    const el = $(id);
+    if (!el) return;
+    // Use `hidden` so the layout collapses cleanly (vs. visibility: hidden).
+    el.hidden = !show;
+  }
   function busy(btn, on) {
     if (!btn) return;
     btn.classList.toggle('is-busy', on);
@@ -96,7 +102,8 @@
     const lms = s.lm_studio || {};
     const lmsServer = $('lms-server');
     const lmsPill = $('lms-status');
-    if (lms.server_up) {
+    const lmsUp = !!lms.server_up;
+    if (lmsUp) {
       lmsServer.textContent = 'running';
       lmsPill.textContent = 'up';
       lmsPill.className = 'status-pill ok';
@@ -106,6 +113,9 @@
       lmsPill.className = 'status-pill err';
     }
     $('lms-base').textContent = lms.base_url || '—';
+    // Toggle the per-component buttons: only the action that's possible right now is shown.
+    toggleButton('btn-start-lms', !lmsUp);
+    toggleButton('btn-stop-lms', lmsUp);
 
     // Loaded models
     const modelsEl = $('lms-models');
@@ -147,7 +157,8 @@
     const w = s.watcher || {};
     const wpill = $('watcher-status');
     const ws = (w.task_state || '').toLowerCase();
-    if (ws === 'running') {
+    const watcherRunning = ws === 'running';
+    if (watcherRunning) {
       wpill.textContent = 'running';
       wpill.className = 'status-pill ok';
     } else if (ws === 'ready') {
@@ -163,6 +174,16 @@
     $('watcher-lastrun').textContent = formatTs(w.last_run);
     $('watcher-lastresult').textContent = formatTaskResult(w.last_result);
     $('watcher-pids').textContent = (w.pythonw_pids || []).join(', ') || '—';
+    toggleButton('btn-start-watcher', !watcherRunning);
+    toggleButton('btn-stop-watcher', watcherRunning);
+
+    // ---- topbar Start All / Stop All ----
+    // "All" = LM Studio up AND watcher running. Mixed states show both buttons
+    // so the user can normalize either direction.
+    const allUp   = lmsUp && watcherRunning;
+    const allDown = !lmsUp && !watcherRunning;
+    toggleButton('btn-start-all', !allUp);    // hide only when fully up
+    toggleButton('btn-stop-all',  !allDown);  // hide only when fully down
 
     // ---- Index ----
     const idx = s.index || {};

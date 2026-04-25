@@ -84,34 +84,162 @@ class CompositeResult:
 
 
 def get_status(settings: Settings) -> dict[str, Any]:
-    """Snapshot of every component the dashboard cares about. Single round-trip
-    to LM Studio + 2 cheap subprocess calls + 1 file read."""
+    """Snapshot of every component the dashboard cares about.
+
+    Each component lives behind a separate subprocess / HTTP call. PowerShell
+    process startup is ~1.5s on Windows, so 5 sequential queries bust the
+    UI's 2s poll cadence. We do two things to fit the budget:
+
+      1. Combine the four PowerShell-driven queries (watcher state + info,
+         pythonw PIDs, RAM) into ONE PowerShell invocation that emits JSON.
+      2. Run the four top-level fetches (LM Studio probe, the combined PS
+         query, lms ps, nvidia-smi) concurrently in a thread pool.
+
+    Net wall time: ~1.5s instead of ~6s.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    # The PS-batch result feeds both _watcher_status and the RAM portion of
+    # _resources_status, so we compute it once and split.
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        f_lms      = ex.submit(_lms_status, settings)
+        f_psbatch  = ex.submit(_powershell_batch)
+        f_index    = ex.submit(_index_status, settings)
+        f_gpu      = ex.submit(_gpu_status_via_nvidia_smi)
+
+    ps = f_psbatch.result()
     return {
         "ts":         _now_iso(),
-        "lm_studio":  _lms_status(settings),
-        "watcher":    _watcher_status(),
-        "index":      _index_status(settings),
-        "resources":  _resources_status(),
+        "lm_studio":  f_lms.result(),
+        "watcher":    _watcher_from_batch(ps),
+        "index":      f_index.result(),
+        "resources":  {"ram": _ram_from_batch(ps), "gpu": f_gpu.result()},
     }
+
+
+def _powershell_batch() -> dict[str, Any]:
+    """One PowerShell invocation -> watcher state + info + pythonw PIDs + RAM.
+
+    Returns {} on any failure; callers handle missing keys.
+    """
+    script = (
+        f"$task = Get-ScheduledTask -TaskName '{WATCHER_TASK_NAME}' -EA SilentlyContinue;\n"
+        f"$info = Get-ScheduledTaskInfo -TaskName '{WATCHER_TASK_NAME}' -EA SilentlyContinue;\n"
+        "$pids = @(Get-Process pythonw -EA SilentlyContinue |\n"
+        "  Where-Object { $_.WorkingSet64 -gt 200MB } |\n"
+        "  Sort-Object StartTime |\n"
+        "  Select-Object -First 4 -ExpandProperty Id);\n"
+        "$os = Get-CimInstance Win32_OperatingSystem;\n"
+        "[PSCustomObject]@{\n"
+        "  taskState          = if ($task) { $task.State.ToString() } else { 'NotRegistered' }\n"
+        "  lastRunTime        = if ($info) { $info.LastRunTime.ToString('o') } else { $null }\n"
+        "  lastTaskResult     = if ($info) { $info.LastTaskResult } else { $null }\n"
+        "  numberOfMissedRuns = if ($info) { $info.NumberOfMissedRuns } else { $null }\n"
+        "  pids               = $pids\n"
+        "  ramTotalKB         = $os.TotalVisibleMemorySize\n"
+        "  ramFreeKB          = $os.FreePhysicalMemory\n"
+        "} | ConvertTo-Json -Compress"
+    )
+    raw = _ps_query(script)
+    with contextlib.suppress(json.JSONDecodeError, ValueError):
+        return json.loads(raw or "{}") or {}
+    return {}
+
+
+def _watcher_from_batch(b: dict[str, Any]) -> dict[str, Any]:
+    pids = b.get("pids") or []
+    if not isinstance(pids, list):  # PS emits a single int when there's exactly one
+        pids = [pids]
+    return {
+        "task_state":            (b.get("taskState") or "Unknown"),
+        "last_run":              b.get("lastRunTime"),
+        "last_result":           b.get("lastTaskResult"),
+        "number_of_missed_runs": b.get("numberOfMissedRuns"),
+        "pythonw_pids":          [int(x) for x in pids if x is not None],
+    }
+
+
+def _ram_from_batch(b: dict[str, Any]) -> dict[str, Any]:
+    try:
+        total_kb = int(b.get("ramTotalKB", 0))
+        free_kb  = int(b.get("ramFreeKB", 0))
+    except (TypeError, ValueError):
+        return {}
+    if total_kb <= 0:
+        return {}
+    return {
+        "total_gb": round(total_kb / 1024 / 1024, 2),
+        "used_gb":  round((total_kb - free_kb) / 1024 / 1024, 2),
+        "free_gb":  round(free_kb / 1024 / 1024, 2),
+    }
+
+
+def _gpu_status_via_nvidia_smi() -> dict[str, Any] | None:
+    """nvidia-smi is fast (~150ms) and tolerant of being absent; we run it
+    directly rather than through PowerShell so its startup cost is minimal."""
+    try:
+        r = subprocess.run(
+            ["nvidia-smi",
+             "--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=4.0, check=False,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+    except (subprocess.TimeoutExpired, OSError, FileNotFoundError):
+        return None
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    parts = [p.strip() for p in r.stdout.splitlines()[0].split(",")]
+    if len(parts) < 5:
+        return None
+    try:
+        return {
+            "name":          parts[0],
+            "vram_used_gb":  round(int(parts[1]) / 1024, 2),
+            "vram_total_gb": round(int(parts[2]) / 1024, 2),
+            "util_pct":      int(parts[3]),
+            "temp_c":        int(parts[4]),
+        }
+    except (ValueError, IndexError):
+        return None
 
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _lms_status(settings: Settings) -> dict[str, Any]:
-    base_url = settings.embedder.base_url.rstrip("/")
+# Cache for /v1/models — when LM Studio's worker is busy serving inference,
+# /v1/models can take 2 s to respond, busting our 2 s poll cadence. The list
+# of downloaded models only changes when the user runs `lms get`, so a 5 s
+# TTL is plenty fresh and keeps polls snappy.
+_LMS_AVAIL_CACHE: tuple[float, bool, list[str]] = (0.0, False, [])
+_LMS_AVAIL_TTL_S = 5.0
+
+
+def _lms_probe(base_url: str) -> tuple[bool, list[str]]:
+    """Return (server_up, available_model_ids). 5s TTL cache."""
+    global _LMS_AVAIL_CACHE
+    now = time.monotonic()
+    ts, server_up, ids = _LMS_AVAIL_CACHE
+    if now - ts < _LMS_AVAIL_TTL_S and ts > 0:
+        return server_up, ids
     server_up = False
-    available_ids: list[str] = []
+    ids = []
     try:
         r = httpx.get(f"{base_url}/models", timeout=2.0)
         if r.status_code == 200:
             server_up = True
             data = r.json().get("data", []) or []
-            available_ids = [str(m.get("id", "")) for m in data if m.get("id")]
+            ids = [str(m.get("id", "")) for m in data if m.get("id")]
     except (httpx.HTTPError, OSError):
         pass
+    _LMS_AVAIL_CACHE = (now, server_up, ids)
+    return server_up, ids
 
+
+def _lms_status(settings: Settings) -> dict[str, Any]:
+    base_url = settings.embedder.base_url.rstrip("/")
+    server_up, available_ids = _lms_probe(base_url)
     loaded = _lms_ps()
     return {
         "server_up": server_up,
@@ -190,41 +318,6 @@ def _parse_size_mb(s: str) -> float:
     return {"KB": val / 1024, "MB": val, "GB": val * 1024}[unit]
 
 
-def _watcher_status() -> dict[str, Any]:
-    """State of the `code-rag-watch` Task Scheduler entry, plus its child PIDs."""
-    state = _ps_query(
-        f"$t = Get-ScheduledTask -TaskName '{WATCHER_TASK_NAME}' -ErrorAction SilentlyContinue; "
-        "if ($t) { $t.State.ToString() } else { 'NotRegistered' }"
-    )
-    info_raw = _ps_query(
-        f"$i = Get-ScheduledTaskInfo -TaskName '{WATCHER_TASK_NAME}' -ErrorAction SilentlyContinue; "
-        "if ($i) { @{LastRunTime = $i.LastRunTime.ToString('o'); LastTaskResult = $i.LastTaskResult; "
-        "          NumberOfMissedRuns = $i.NumberOfMissedRuns} | ConvertTo-Json -Compress } "
-        "else { '{}' }"
-    )
-    info: dict[str, Any] = {}
-    with contextlib.suppress(json.JSONDecodeError):
-        info = json.loads(info_raw or "{}")
-
-    # PIDs of pythonw processes that look like our watcher (short oldest-first).
-    pids_raw = _ps_query(
-        "Get-Process pythonw -ErrorAction SilentlyContinue | "
-        "Where-Object { $_.WorkingSet64 -gt 200MB } | "
-        "Sort-Object StartTime | "
-        "ForEach-Object { $_.Id } | "
-        "Select-Object -First 4"
-    )
-    pids = [int(x) for x in re.findall(r"\d+", pids_raw or "")]
-
-    return {
-        "task_state":            state.strip() if state else "Unknown",
-        "last_run":              info.get("LastRunTime"),
-        "last_result":           info.get("LastTaskResult"),
-        "number_of_missed_runs": info.get("NumberOfMissedRuns"),
-        "pythonw_pids":          pids,
-    }
-
-
 def _index_status(settings: Settings) -> dict[str, Any]:
     p = settings.index_meta_path
     if not p.exists():
@@ -257,48 +350,6 @@ def _index_status(settings: Settings) -> dict[str, Any]:
         "created_at":      meta.get("created_at"),
         "updated_at":      meta.get("updated_at"),
     }
-
-
-def _resources_status() -> dict[str, Any]:
-    """System RAM + GPU VRAM. Best-effort — missing nvidia-smi just omits GPU."""
-    out: dict[str, Any] = {"ram": {}, "gpu": None}
-
-    # RAM via PowerShell (cheap, always available on Windows).
-    ram = _ps_query(
-        "$os = Get-CimInstance Win32_OperatingSystem; "
-        "@{TotalKB = $os.TotalVisibleMemorySize; FreeKB = $os.FreePhysicalMemory} | ConvertTo-Json -Compress"
-    )
-    try:
-        d = json.loads(ram or "{}")
-        total_kb = int(d.get("TotalKB", 0))
-        free_kb = int(d.get("FreeKB", 0))
-        out["ram"] = {
-            "total_gb": round(total_kb / 1024 / 1024, 2),
-            "used_gb":  round((total_kb - free_kb) / 1024 / 1024, 2),
-            "free_gb":  round(free_kb / 1024 / 1024, 2),
-        }
-    except (json.JSONDecodeError, ValueError):
-        pass
-
-    # GPU via nvidia-smi (skip if missing — not every machine has Nvidia).
-    nvsmi_raw = _ps_query(
-        "& nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu "
-        "--format=csv,noheader,nounits 2>$null"
-    )
-    if nvsmi_raw and "," in nvsmi_raw:
-        first_line = nvsmi_raw.strip().splitlines()[0]
-        parts = [p.strip() for p in first_line.split(",")]
-        if len(parts) >= 5:
-            with contextlib.suppress(ValueError, IndexError):
-                out["gpu"] = {
-                    "name":         parts[0],
-                    "vram_used_gb": round(int(parts[1]) / 1024, 2),
-                    "vram_total_gb": round(int(parts[2]) / 1024, 2),
-                    "util_pct":     int(parts[3]),
-                    "temp_c":       int(parts[4]),
-                }
-
-    return out
 
 
 # ---- start operations -------------------------------------------------------
