@@ -716,17 +716,26 @@ def index_stats(ctx: click.Context) -> None:
     if not settings.index_meta_path.exists():
         click.echo("no index yet — run `code-rag index`", err=True)
         sys.exit(1)
-    meta = settings.index_meta_path.read_text("utf-8")
-    click.echo(meta)
-    # Open the collection read-only just to count.
+    meta_text = settings.index_meta_path.read_text("utf-8")
+    click.echo(meta_text)
+    # Open the collection read-only just to count. The collection name is
+    # namespaced by embedder model+dim, so we compute the same hash the store
+    # uses when opening — see ChromaVectorStore._resolved_name.
     import chromadb
+
+    from code_rag.models import IndexMeta
+    from code_rag.stores.chroma_vector import ChromaVectorStore
     if settings.chroma_dir.exists():
         client = chromadb.PersistentClient(path=str(settings.chroma_dir))
+        meta_obj = IndexMeta.model_validate_json(meta_text)
+        coll_name = ChromaVectorStore._resolved_name(
+            settings.vector_store.collection, meta_obj,
+        )
         try:
-            coll = client.get_collection(settings.vector_store.collection)
-            click.echo(f"chunks: {coll.count()}")
+            coll = client.get_collection(coll_name)
+            click.echo(f"chunks: {coll.count()}  (collection: {coll_name})")
         except Exception as e:
-            click.echo(f"chunks: (unavailable: {e})")
+            click.echo(f"chunks: (unavailable: {e}; collection={coll_name!r})")
 
 
 @main.group()
