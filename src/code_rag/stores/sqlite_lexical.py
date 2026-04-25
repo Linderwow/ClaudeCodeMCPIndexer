@@ -186,6 +186,15 @@ class SqliteLexicalStore(LexicalStore):
             row = self._require().execute("SELECT COUNT(*) FROM chunks").fetchone()
             return int(row[0]) if row else 0
 
+    def list_paths(self) -> set[str]:
+        """Distinct path values across all stored chunks. Cheap thanks to the
+        `chunks_path_idx` index on the chunks table."""
+        with self._lock:
+            rows = self._require().execute(
+                "SELECT DISTINCT path FROM chunks"
+            ).fetchall()
+        return {str(r[0]) for r in rows}
+
     # ---- internals ----------------------------------------------------------
 
     def _require(self) -> sqlite3.Connection:

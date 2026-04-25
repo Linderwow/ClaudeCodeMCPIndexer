@@ -118,6 +118,48 @@ def test_meta_mismatch_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
         store2.open(bad)
 
 
+def test_reindex_all_gcs_paths_for_deleted_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If a source file is deleted while the watcher is offline, the next
+    `reindex_all` must purge its chunks via the stale-path GC pass.
+    Without GC, search would return ghost hits forever."""
+    from code_rag.factory import build_lexical_store
+    _make_settings(tmp_path, monkeypatch)
+    settings = load_settings()
+    embedder = FakeEmbedder(dim=32)
+    vec = ChromaVectorStore(
+        persist_dir=settings.chroma_dir,
+        collection=settings.vector_store.collection,
+        meta_path=settings.index_meta_path,
+    )
+    lex = build_lexical_store(settings)
+    meta = ChromaVectorStore.build_meta("fake", embedder.model, embedder.dim)
+    vec.open(meta)
+    lex.open()
+    try:
+        indexer = Indexer(settings, embedder, vec, lexical_store=lex)
+        asyncio.run(indexer.reindex_all())
+        before_paths = lex.list_paths()
+        assert len(before_paths) >= 2  # a.py and b.cs
+
+        # Now simulate watcher-offline file deletion: physically remove a file
+        # from disk WITHOUT going through indexer.remove_path.
+        (tmp_path / "repo" / "pkg" / "a.py").unlink()
+
+        # Naive reindex would leave a.py's chunks in stores forever. Our GC
+        # pass must catch it.
+        stats = asyncio.run(indexer.reindex_all())
+        assert stats.paths_gc >= 1, f"expected GC to remove orphan, stats={stats.as_dict()}"
+        after_paths = lex.list_paths()
+        assert "pkg/a.py" not in after_paths
+        # b.cs (still on disk) survived.
+        assert any(p.endswith("b.cs") for p in after_paths)
+    finally:
+        vec.close()
+        lex.close()
+
+
 def test_query_returns_relevant_chunk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """With FakeEmbedder (hash-based, deterministic) the exact-text query must
     return the identical chunk first (distance = 0)."""

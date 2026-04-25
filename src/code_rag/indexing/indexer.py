@@ -26,6 +26,7 @@ class IndexStats:
     chunks_emitted: int = 0
     chunks_upserted: int = 0
     paths_purged: int = 0
+    paths_gc: int = 0  # stale paths reaped because their files vanished
     elapsed_s: float = 0.0
     errors: list[str] = field(default_factory=list)
 
@@ -37,6 +38,7 @@ class IndexStats:
             "chunks_emitted": self.chunks_emitted,
             "chunks_upserted": self.chunks_upserted,
             "paths_purged": self.paths_purged,
+            "paths_gc": self.paths_gc,
             "elapsed_s": round(self.elapsed_s, 3),
             "errors": self.errors[:10],
         }
@@ -86,13 +88,58 @@ class Indexer:
     async def reindex_all(self) -> IndexStats:
         stats = IndexStats()
         t0 = time.monotonic()
+        # Track every path the walker visits this pass. Anything in the index
+        # that's NOT in this set represents a stale entry (file deleted, repo
+        # removed, root unconfigured, glob now ignores it, file too big, etc.)
+        # and gets reaped after the walk finishes — see `_gc_stale_paths`.
+        seen: set[str] = set()
         for _root, abs_path, lang in self._walker.iter_code():
-            await self._process_file(abs_path, lang, stats, is_doc=False)
+            rel = await self._process_file(abs_path, lang, stats, is_doc=False)
+            if rel is not None:
+                seen.add(rel)
         for _root, abs_path, lang in self._walker.iter_docs():
-            await self._process_file(abs_path, lang, stats, is_doc=True)
+            rel = await self._process_file(abs_path, lang, stats, is_doc=True)
+            if rel is not None:
+                seen.add(rel)
+        await self._gc_stale_paths(seen, stats)
         stats.elapsed_s = time.monotonic() - t0
         log.info("indexer.done", **stats.as_dict())
         return stats
+
+    async def _gc_stale_paths(self, seen: set[str], stats: IndexStats) -> None:
+        """Purge index entries whose source files weren't visited this pass.
+
+        Diff = (paths-in-lex) - (paths-walked-now). Anything in the diff is
+        either:
+          * deleted from disk while the watcher was offline,
+          * now ignored by config,
+          * outside any configured root after a roots edit,
+          * over the file-size cap,
+          * orphaned by a renamed file we missed.
+        Either way it's safe to remove; if the file comes back, the next
+        walker pass will re-ingest it via the normal upsert path.
+        """
+        if self._lex is None:
+            return
+        try:
+            indexed = self._lex.list_paths()  # type: ignore[attr-defined]
+        except Exception as e:
+            stats.errors.append(f"gc_list_paths:{e}")
+            return
+        stale = indexed - seen
+        if not stale:
+            return
+        log.info("indexer.gc.start", stale_paths=len(stale))
+        for rel in stale:
+            try:
+                self._vec.delete_by_path(rel)
+                self._lex.delete_by_path(rel)  # type: ignore[attr-defined]
+                if self._graph is not None:
+                    self._graph.delete_by_path(rel)  # type: ignore[attr-defined]
+                stats.paths_gc += 1
+            except Exception as e:
+                stats.errors.append(f"gc_delete:{rel}:{e}")
+        log.info("indexer.gc.done", paths_gc=stats.paths_gc)
 
     async def reindex_path(self, path: Path) -> IndexStats:
         """Reindex a single file or a single subtree."""
@@ -143,7 +190,9 @@ class Indexer:
         stats: IndexStats,
         *,
         is_doc: bool,
-    ) -> None:
+    ) -> str | None:
+        """Process one file. Returns the rel-path so `reindex_all` can track
+        which paths were visited (for the stale-path GC pass)."""
         stats.files_seen += 1
         rel, repo = _rel_and_repo(abs_path, self._settings.all_roots())
 
@@ -159,7 +208,7 @@ class Indexer:
                 )
         except Exception as e:
             stats.errors.append(f"chunk:{rel}:{type(e).__name__}:{e}")
-            return
+            return rel
 
         # Empty file: purge any stale chunks and return. This is the only case
         # where we delete without a successful embed to replace the chunks.
@@ -177,7 +226,7 @@ class Indexer:
                 except Exception as e:
                     stats.errors.append(f"graph_delete:{rel}:{e}")
             stats.files_skipped += 1
-            return
+            return rel
 
         stats.chunks_emitted += len(chunks)
 
@@ -188,7 +237,7 @@ class Indexer:
             vectors = await self._embed.embed([c.text for c in chunks])
         except Exception as e:
             stats.errors.append(f"embed:{rel}:{type(e).__name__}:{e}")
-            return
+            return rel
 
         # Only now do we delete stale chunks (source-of-truth semantics) and
         # insert the fresh ones.
@@ -222,6 +271,7 @@ class Indexer:
         stats.files_indexed += 1
         stats.chunks_upserted += len(chunks)
         log.debug("indexer.file", path=rel, chunks=len(chunks))
+        return rel
 
 
 def _rel_and_repo(abs_path: Path, roots: Iterable[Path]) -> tuple[str, str]:

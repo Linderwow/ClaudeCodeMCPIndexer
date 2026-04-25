@@ -34,3 +34,12 @@ class LexicalStore(ABC):
 
     @abstractmethod
     def count(self) -> int: ...
+
+    @abstractmethod
+    def list_paths(self) -> set[str]:
+        """Return every distinct `path` currently stored.
+
+        Used by the indexer's stale-path GC: anything in here that the
+        walker doesn't visit on a full reindex represents an orphan and
+        should be purged from all three stores.
+        """
