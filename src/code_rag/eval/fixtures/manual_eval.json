@@ -1,0 +1,202 @@
+[
+  {
+    "query": "OnBarUpdate",
+    "expected": [{"path": "MNQAlpha.cs"}],
+    "tag": "identifier"
+  },
+  {
+    "query": "OnStateChange MNQAlpha",
+    "expected": [{"path": "MNQAlpha.cs"}],
+    "tag": "identifier"
+  },
+  {
+    "query": "ReadTradeGate",
+    "expected": [{"path": "MNQAlpha.cs"}],
+    "tag": "identifier"
+  },
+  {
+    "query": "ExportBarsForML",
+    "expected": [{"path": "MNQAlpha.cs"}],
+    "tag": "identifier"
+  },
+  {
+    "query": "RunGhostEvaluation",
+    "expected": [{"path": "MNQAlpha.cs"}],
+    "tag": "identifier"
+  },
+  {
+    "query": "AtomicCsvWrite",
+    "expected": [{"path": "MNQAlpha.cs"}],
+    "tag": "identifier"
+  },
+  {
+    "query": "STRATEGY_VERSION constant",
+    "expected": [{"path": "MNQAlpha.cs"}],
+    "tag": "identifier"
+  },
+  {
+    "query": "where does the strategy size positions",
+    "expected": [{"path": "MNQAlpha.cs"}],
+    "tag": "natural_language"
+  },
+  {
+    "query": "how does MNQAlpha classify session phase (PreMarket OpenDrive MidMorning Lunch PowerHour)",
+    "expected": [{"path": "MNQAlpha.cs"}],
+    "tag": "natural_language"
+  },
+  {
+    "query": "how is volatility regime classified Low Normal High Extreme",
+    "expected": [{"path": "MNQAlpha.cs"}],
+    "tag": "natural_language"
+  },
+  {
+    "query": "noise floor stop price never violated after entry",
+    "expected": [{"path": "MNQAlpha.cs"}],
+    "tag": "natural_language"
+  },
+  {
+    "query": "Arbiter shadow log compares chosen edge vs FindTrade decision",
+    "expected": [{"path": "MNQAlpha.cs"}],
+    "tag": "natural_language"
+  },
+  {
+    "query": "per-edge P&L tracking arrays for LevelBounce SweepFade ORBBreak ORBRetest",
+    "expected": [{"path": "MNQAlpha.cs"}],
+    "tag": "natural_language"
+  },
+  {
+    "query": "Kelly optimal fraction sizing",
+    "expected": [{"path": "MNQAlpha.cs"}],
+    "tag": "natural_language"
+  },
+  {
+    "query": "DOM order book imbalance",
+    "expected": [{"path": "MNQAlpha.cs"}],
+    "tag": "natural_language"
+  },
+  {
+    "query": "ghost trade evaluation that runs all edges in shadow mode",
+    "expected": [{"path": "MNQAlpha.cs"}],
+    "tag": "natural_language"
+  },
+  {
+    "query": "regime_predictor",
+    "expected": [{"path": "regime_predictor.py"}],
+    "tag": "identifier"
+  },
+  {
+    "query": "rl_manager reinforcement learning manager",
+    "expected": [{"path": "rl_manager.py"}],
+    "tag": "identifier"
+  },
+  {
+    "query": "trade_gate ML gate consumer",
+    "expected": [{"path": "trade_gate.py"}],
+    "tag": "identifier"
+  },
+  {
+    "query": "monitor.py heartbeat",
+    "expected": [{"path": "monitor.py"}],
+    "tag": "identifier"
+  },
+  {
+    "query": "alerts_watcher",
+    "expected": [{"path": "alerts_watcher.py"}],
+    "tag": "identifier"
+  },
+  {
+    "query": "feature_engineering_v2",
+    "expected": [{"path": "feature_engineering_v2.py"}],
+    "tag": "identifier"
+  },
+  {
+    "query": "gate calibrator classes",
+    "expected": [{"path": "gate_calibrator_classes.py"}],
+    "tag": "natural_language"
+  },
+  {
+    "query": "purged k-fold cross validation for finance",
+    "expected": [{"path": "purged_kfold.py"}],
+    "tag": "natural_language"
+  },
+  {
+    "query": "triple barrier labeling for trade outcomes",
+    "expected": [{"path": "label_trades_triple_barrier.py"}],
+    "tag": "natural_language"
+  },
+  {
+    "query": "FRED macro economic data fetcher",
+    "expected": [{"path": "fred_macro.py"}],
+    "tag": "natural_language"
+  },
+  {
+    "query": "ghost counterfactual merge",
+    "expected": [{"path": "ghost_counterfactual_merge.py"}, {"path": "ghost_counterfactual.py"}],
+    "tag": "natural_language"
+  },
+  {
+    "query": "RL environment for trade decisions",
+    "expected": [{"path": "rl_env.py"}],
+    "tag": "natural_language"
+  },
+  {
+    "query": "edge graduation logic that promotes hot edges",
+    "expected": [{"path": "edge_graduation.py"}],
+    "tag": "natural_language"
+  },
+  {
+    "query": "AppointmentCenter API integration test fixtures",
+    "expected": [{"path": "AppointmentCenter.API.IntegrationTests/Fixtures/PipelineTestFixture.cs"}],
+    "tag": "natural_language"
+  },
+  {
+    "query": "bizwiz job costing manhour entry",
+    "expected": [{"path": "bizwiz-4.0/src/BizWizSource-App/js/jobcosting_manhour_entry_weekly.js"}],
+    "tag": "natural_language"
+  },
+  {
+    "query": "Angular reset signals test util",
+    "expected": [{"path": "appointment-center/client/src/app/opportunities/test-utils/reset-signals.ts"}],
+    "tag": "natural_language"
+  },
+  {
+    "query": "playwright reoccurring opportunity step definitions",
+    "expected": [{"path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/ReoccurringOpportunitySteps.cs"}],
+    "tag": "natural_language"
+  },
+  {
+    "query": "BizWizSmokeTest project",
+    "expected": [{"path": "BizWizSmokeTest"}],
+    "tag": "natural_language"
+  },
+  {
+    "query": "MarketingOverviewResultProcessor",
+    "expected": [{"path": "bizwiz-4.0/src/BizWiz.ApplicationTier/Processors/Marketing/MarketingOverview/MarketingOverviewResultProcessor.cs"}],
+    "tag": "identifier"
+  },
+  {
+    "query": "GoogleSearchIngestionStrategy in ai-lab",
+    "expected": [{"path": "ai-lab/src/Modules/SentimentApi/Infrastructure/Strategies/GoogleSearchIngestionStrategy.cs"}],
+    "tag": "identifier"
+  },
+  {
+    "query": "Where is the ML trade gate setup CSV written from MNQAlpha",
+    "expected": [{"path": "MNQAlpha.cs"}],
+    "tag": "natural_language"
+  },
+  {
+    "query": "ICompaniesGateway dealer mobile setting by key",
+    "expected": [{"path": "bizwiz-4.0/src/BizWiz.ApiGateway.Client/Companies/CompaniesGateway.cs"}],
+    "tag": "identifier"
+  },
+  {
+    "query": "Pyramid add cooldown tracking last bar",
+    "expected": [{"path": "MNQAlpha.cs"}],
+    "tag": "natural_language"
+  },
+  {
+    "query": "Edge enum LevelBounce SweepFade ORBBreak ORBRetest",
+    "expected": [{"path": "MNQAlpha.cs"}],
+    "tag": "identifier"
+  }
+]

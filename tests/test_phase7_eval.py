@@ -77,11 +77,76 @@ def test_load_cases_roundtrip(tmp_path: Path) -> None:
     fixture.write_text(json.dumps([
         {"query": "foo", "expected": [{"path": "a.py", "symbol": "f"}]},
         {"query": "bar", "expected": [{"path": "b.py"}]},
+        {"query": "baz", "expected": [{"path": "c.py"}], "tag": "natural_language"},
     ]), encoding="utf-8")
     cases = load_cases(fixture)
-    assert len(cases) == 2
+    assert len(cases) == 3
     assert cases[0].expected[0].symbol == "f"
     assert cases[1].expected[0].symbol is None
+    assert cases[2].tag == "natural_language"
+
+
+def test_ndcg_at_10_math() -> None:
+    # rank 1 → 1.0; rank 2 → 1/log2(3) ≈ 0.6309; rank 11 → 0.
+    import math
+    stub = _StubSearcher({
+        "A": [_hit("foo.py")],                                 # rank 1
+        "B": [_hit("bar.py"), _hit("foo.py")],                  # rank 2
+        "C": [_hit(f"x{i}.py") for i in range(15)] + [_hit("foo.py")],  # rank 16, beyond 10
+    })
+    cases = [
+        EvalCase("A", [ExpectedHit("foo.py")]),
+        EvalCase("B", [ExpectedHit("foo.py")]),
+        EvalCase("C", [ExpectedHit("foo.py")]),
+    ]
+    report = asyncio.run(run_eval(cases, stub, top_k=20))  # type: ignore[arg-type]
+    expected = (1.0 + (1.0 / math.log2(3)) + 0.0) / 3
+    assert report.ndcg_at_10 == pytest.approx(expected, abs=1e-4)
+
+
+def test_per_tag_breakdown_groups_correctly() -> None:
+    stub = _StubSearcher({
+        "ID-1":  [_hit("foo.py")],
+        "ID-2":  [_hit("foo.py")],
+        "NL-1":  [_hit("nope.py")],
+    })
+    cases = [
+        EvalCase("ID-1", [ExpectedHit("foo.py")], tag="identifier"),
+        EvalCase("ID-2", [ExpectedHit("foo.py")], tag="identifier"),
+        EvalCase("NL-1", [ExpectedHit("foo.py")], tag="natural_language"),
+    ]
+    report = asyncio.run(run_eval(cases, stub, top_k=10))  # type: ignore[arg-type]
+    per_tag = report.per_tag()
+    assert per_tag["identifier"]["recall@1"] == 1.0
+    assert per_tag["natural_language"]["recall@1"] == 0.0
+    assert per_tag["identifier"]["n"] == 2
+    assert per_tag["natural_language"]["n"] == 1
+
+
+def test_p99_latency_handles_small_n() -> None:
+    """Don't crash on a 1-case eval — common in CI smoke tests."""
+    stub = _StubSearcher({"Q": [_hit("foo.py")]})
+    cases = [EvalCase("Q", [ExpectedHit("foo.py")])]
+    report = asyncio.run(run_eval(cases, stub, top_k=10))  # type: ignore[arg-type]
+    # Whatever the timing, it should be a non-negative finite number.
+    assert report.p99_latency_ms >= 0.0
+    assert report.p99_latency_ms == report.p50_latency_ms  # n=1 → all percentiles equal
+
+
+def test_diff_report_pp_deltas() -> None:
+    from code_rag.eval.harness import EvalReport, EvalResult
+    base = EvalReport(cases=[
+        EvalResult("Q", rank=3, latency_ms=100.0, top_paths=["a", "b", "foo"]),
+    ], label="baseline")
+    cur = EvalReport(cases=[
+        EvalResult("Q", rank=1, latency_ms=80.0, top_paths=["foo"]),
+    ], label="after-fix")
+    diff = cur.diff(base)
+    # recall@1 went from 0 → 1 = +1.0 = +100 pp
+    assert diff["deltas_pp"]["recall@1"] == pytest.approx(100.0, abs=0.1)
+    # latency improved by 20 ms
+    assert diff["deltas_ms"]["p50_latency_ms"] == pytest.approx(-20.0, abs=0.1)
+    assert "after-fix" in diff["label"] and "baseline" in diff["label"]
 
 
 # ---- integration: real searcher on a tiny corpus ---------------------------

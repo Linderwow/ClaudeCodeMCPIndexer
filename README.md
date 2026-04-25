@@ -118,26 +118,74 @@ code-rag index-stats
 
 ## Evaluate retrieval quality
 
-Author a JSON fixture (`my_eval.json`):
+The eval harness reports **Recall@1/3/10**, **MRR**, **NDCG@10**, **p50/p95/p99 latency**, and per-tag breakdowns — enough to cleanly diff every embedder swap, rerank tweak, or chunker change.
+
+### Mine real queries from your Claude history
+
+Get a FREE 200-pair ground-truth fixture from your past sessions:
+
+```powershell
+code-rag eval-mine --output data/eval/mined.json --max-pairs 500
+```
+
+Walks every transcript under `~/.claude/projects/`, finds user questions followed by Claude's first `Read`/`Edit` on a file, and emits the `(query, expected_path)` pairs as JSON. Heuristics filter out commands ("commit this", "run tests") and conversational noise — only real retrieval-style questions land in the fixture.
+
+### Author cases by hand (for known-hard queries)
+
+Each case can declare a `tag` so you can see which kinds of queries regress:
 
 ```json
 [
-  {"query": "how is OnBarUpdate wired", "expected": [{"path": "MNQAlpha.cs"}]},
-  {"query": "UserService.getById", "expected": [{"path": "user-service.ts", "symbol": "UserService.getById"}]}
+  {"query": "OnBarUpdate", "expected": [{"path": "MNQAlpha.cs"}], "tag": "identifier"},
+  {"query": "where does the strategy size positions", "expected": [{"path": "MNQAlpha.cs"}], "tag": "natural_language"},
+  {"query": "UserService.getById", "expected": [{"path": "user-service.ts", "symbol": "UserService.getById"}], "tag": "graph_walk"}
 ]
 ```
 
-Run:
+A starter set is at `src/code_rag/eval/fixtures/manual_eval.json` (40 hand-authored cases covering MNQAlpha, signals/, RiderProjects).
+
+### Run, save, and diff against a baseline
 
 ```powershell
-code-rag eval my_eval.json --json-out report.json
+# Establish a baseline.
+code-rag eval src/code_rag/eval/fixtures/manual_eval.json `
+  --label "baseline-qwen3-embed-4b" `
+  --json-out data/eval/baseline.json
+
+# After swapping embedders / rerankers / chunker, compare:
+code-rag eval src/code_rag/eval/fixtures/manual_eval.json `
+  --label "after-bge-code-v1" `
+  --baseline data/eval/baseline.json `
+  --fail-on-regression 2.0 `   # Exit 2 if any metric drops > 2 pp
+  --json-out data/eval/after-bge.json
 ```
 
 Output:
 
+```json
+{
+  "n": 40,
+  "recall@1": 0.425, "recall@3": 0.675, "recall@10": 0.875,
+  "mrr": 0.569, "ndcg@10": 0.6434,
+  "p50_latency_ms": 47.0, "p95_latency_ms": 188.0, "p99_latency_ms": 328.0
+}
+
+per-tag:
+{
+  "identifier":       {"n": 17, "recall@10": 0.82, "ndcg@10": 0.65, ...},
+  "natural_language": {"n": 23, "recall@10": 0.91, "ndcg@10": 0.64, ...}
+}
+
+diff vs baseline:
+{
+  "deltas_pp": {"recall@1": +5.0, "recall@3": +3.5, "recall@10": +1.2, ...},
+  "deltas_ms": {"p50_latency_ms": -8.0, ...}
+}
 ```
-{ "n": 2, "recall@1": 0.5, "recall@3": 1.0, "recall@10": 1.0, "mrr": 0.75, "p50_latency_ms": 84.2, "p95_latency_ms": 91.1 }
-```
+
+### CI gate
+
+`--fail-on-regression 2.0` exits non-zero if any headline metric drops by more than 2 percentage points vs the baseline — drop it into a GitHub Action to block commits that quietly hurt retrieval quality.
 
 ## Register with Claude Code (MCP)
 

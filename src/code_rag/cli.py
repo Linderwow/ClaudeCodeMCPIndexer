@@ -49,7 +49,7 @@ _force_utf8_streams()
               type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=False))
 @click.pass_context
 def main(ctx: click.Context, log_level: str) -> None:
-    """code-rag-mcp — local code + doc RAG as an MCP server."""
+    """code-rag-mcp -- local code + doc RAG as an MCP server."""
     settings = load_settings()
     configure(settings.paths.log_dir, level=log_level.upper())
     ctx.ensure_object(dict)
@@ -85,7 +85,7 @@ def add_root(ctx: click.Context, path: Path) -> None:
 def remove_root(ctx: click.Context, path: Path) -> None:
     """Remove a codebase directory from the indexed set.
 
-    Does not delete the on-disk index for that root — call `code-rag index`
+    Does not delete the on-disk index for that root -- call `code-rag index`
     after removing if you want the store pruned.
     """
     from code_rag.roots_edit import remove_root as _remove
@@ -145,7 +145,7 @@ def ping(ctx: click.Context) -> None:
 @main.command()
 @click.pass_context
 def status(ctx: click.Context) -> None:
-    """Summarize configured roots and data dir. Indexing-free — safe to run anytime."""
+    """Summarize configured roots and data dir. Indexing-free -- safe to run anytime."""
     settings = ctx.obj["settings"]
     click.echo(f"version      {__version__}")
     click.echo(f"data_dir     {settings.paths.data_dir}")
@@ -170,10 +170,12 @@ def index(ctx: click.Context, path_: Path | None) -> None:
     settings = ctx.obj["settings"]
 
     async def _run() -> int:
+        from code_rag.indexing.file_hash import FileHashRegistry
         embedder = build_embedder(settings)
         vec = build_vector_store(settings)
         lex = build_lexical_store(settings)
         graph = build_graph_store(settings)
+        hashes = FileHashRegistry(settings.file_hashes_path)
         try:
             await embedder.health()
         except Exception as e:
@@ -188,6 +190,7 @@ def index(ctx: click.Context, path_: Path | None) -> None:
             vec.open(meta)
             lex.open()
             graph.open()
+            hashes.open()
         except Exception as e:
             click.echo(f"FAIL  index open: {e}", err=True)
             return 1
@@ -196,6 +199,7 @@ def index(ctx: click.Context, path_: Path | None) -> None:
                 settings, embedder, vec,
                 lexical_store=lex,
                 graph_store=GraphIngester(graph),
+                file_hashes=hashes,
             )
             stats = (await indexer.reindex_path(path_)) if path_ else (await indexer.reindex_all())
             click.echo(json.dumps(stats.as_dict(), indent=2))
@@ -204,6 +208,7 @@ def index(ctx: click.Context, path_: Path | None) -> None:
             vec.close()
             lex.close()
             graph.close()
+            hashes.close()
             if isinstance(embedder, LMStudioEmbedder):
                 await embedder.aclose()
 
@@ -229,7 +234,7 @@ def search(ctx: click.Context, query: tuple[str, ...], top_k: int,
         reranker = build_reranker(settings)
 
         if not settings.index_meta_path.exists():
-            click.echo("no index yet — run `code-rag index` first", err=True)
+            click.echo("no index yet -- run `code-rag index` first", err=True)
             return 1
 
         try:
@@ -292,7 +297,7 @@ def install(
 ) -> None:
     """Idempotent one-shot setup: probe LM Studio, build the initial index,
     wire the MCP server into every Claude config we find, and register the
-    Task Scheduler autostart. Safe to rerun — each step is a no-op if already done.
+    Task Scheduler autostart. Safe to rerun -- each step is a no-op if already done.
     """
     from code_rag.install import InstallOptions, run_install_sync
     settings = ctx.obj["settings"]
@@ -388,7 +393,7 @@ def doctor(ctx: click.Context) -> None:
                 finally:
                     lex.close()
         else:
-            fail("index", "no index yet — run `code-rag index`")
+            fail("index", "no index yet -- run `code-rag index`")
 
         click.echo()
         if failed:
@@ -441,7 +446,7 @@ def bootstrap(ctx: click.Context) -> None:
 def watch(ctx: click.Context) -> None:
     """Watch configured roots and incrementally reindex on change.
 
-    Debounced (config.toml [watcher].debounce_ms). Safe to run unattended —
+    Debounced (config.toml [watcher].debounce_ms). Safe to run unattended --
     designed to be invoked at login by Task Scheduler (see docs/autostart.md).
     """
     settings = ctx.obj["settings"]
@@ -536,7 +541,7 @@ def callees(ctx: click.Context, symbol: str, path_: str | None) -> None:
 @click.option("--path", "path_", default=None)
 @click.pass_context
 def symbol(ctx: click.Context, symbol: str, path_: str | None) -> None:
-    """Find a symbol by name — useful to confirm a file was indexed."""
+    """Find a symbol by name -- useful to confirm a file was indexed."""
     settings = ctx.obj["settings"]
     graph = build_graph_store(settings, read_only=True)
     try:
@@ -555,11 +560,27 @@ def symbol(ctx: click.Context, symbol: str, path_: str | None) -> None:
 @click.option("-k", "--top-k", default=10, show_default=True, type=int)
 @click.option("--json-out", "json_out", type=click.Path(path_type=Path), default=None,
               help="Write full per-case report here; summary still printed to stdout.")
+@click.option("--label", default=None,
+              help="Identifier for this run (e.g. 'after BGE swap'). Stored in the report.")
+@click.option("--baseline", "baseline", type=click.Path(exists=True, path_type=Path), default=None,
+              help="Path to a previous report's JSON. Compute pp-deltas vs it and print a diff.")
+@click.option("--fail-on-regression", "fail_on_regression", default=None, type=float,
+              help="Exit non-zero if any headline metric regresses by more than N pp vs --baseline.")
 @click.pass_context
-def eval(ctx: click.Context, fixture: Path, top_k: int, json_out: Path | None) -> None:
-    """Evaluate retrieval quality against a JSON fixture of (query, expected) pairs."""
+def eval(
+    ctx: click.Context,
+    fixture: Path, top_k: int, json_out: Path | None,
+    label: str | None, baseline: Path | None, fail_on_regression: float | None,
+) -> None:
+    """Evaluate retrieval quality against a JSON fixture of (query, expected) pairs.
+
+    Use `--baseline previous_report.json` to print pp-deltas in every metric
+    so you can confirm a change (embedder swap, rerank tweak, chunker fix)
+    actually moved the needle. Combine with `--fail-on-regression 2.0` for a
+    CI gate that blocks commits that drop quality by >2 pp.
+    """
     settings = ctx.obj["settings"]
-    from code_rag.eval.harness import load_cases, run_eval_sync
+    from code_rag.eval.harness import EvalReport, load_cases, run_eval
 
     async def _run() -> int:
         embedder = build_embedder(settings)
@@ -567,7 +588,7 @@ def eval(ctx: click.Context, fixture: Path, top_k: int, json_out: Path | None) -
         lex = build_lexical_store(settings)
         reranker = build_reranker(settings)
         if not settings.index_meta_path.exists():
-            click.echo("no index yet — run `code-rag index` first", err=True)
+            click.echo("no index yet -- run `code-rag index` first", err=True)
             return 1
         await embedder.health()
         meta = ChromaVectorStore.build_meta(
@@ -580,9 +601,49 @@ def eval(ctx: click.Context, fixture: Path, top_k: int, json_out: Path | None) -
         try:
             searcher = HybridSearcher(embedder, vec, lex, reranker)
             cases = load_cases(fixture)
-            report = run_eval_sync(cases, searcher, top_k=top_k,
-                                   rerank_in=settings.reranker.top_k_in)
+            index_meta_dict = json.loads(settings.index_meta_path.read_text("utf-8"))
+            # Call run_eval (async) directly -- run_eval_sync wraps asyncio.run
+            # which can't nest inside this CLI's existing event loop.
+            report = await run_eval(
+                cases, searcher,
+                top_k=top_k, rerank_in=settings.reranker.top_k_in,
+                label=label, index_meta=index_meta_dict,
+            )
             click.echo(json.dumps(report.summary(), indent=2))
+            click.echo("\nper-tag:", err=True)
+            click.echo(json.dumps(report.per_tag(), indent=2), err=True)
+
+            if baseline is not None:
+                baseline_data = json.loads(baseline.read_text("utf-8"))
+                # Reconstruct an EvalReport from the saved dict for diffing.
+                from code_rag.eval.harness import EvalResult
+                base_report = EvalReport(
+                    cases=[
+                        EvalResult(
+                            query=str(c.get("query", "")),
+                            rank=c.get("rank"),
+                            latency_ms=float(c.get("latency_ms", 0.0)),
+                            top_paths=list(c.get("top_paths", [])),
+                            tag=c.get("tag"),
+                        )
+                        for c in baseline_data.get("cases", [])
+                    ],
+                    label=baseline_data.get("label"),
+                    index_meta=baseline_data.get("index_meta"),
+                )
+                diff = report.diff(base_report)
+                click.echo("\ndiff vs baseline:")
+                click.echo(json.dumps(diff, indent=2))
+                if fail_on_regression is not None:
+                    worst = min(diff["deltas_pp"].values()) if diff["deltas_pp"] else 0.0
+                    if worst < -fail_on_regression:
+                        click.echo(
+                            f"\nFAIL: regression of {abs(worst):.2f} pp exceeds "
+                            f"threshold of {fail_on_regression} pp",
+                            err=True,
+                        )
+                        return 2
+
             if json_out:
                 json_out.write_text(json.dumps(report.as_dict(), indent=2), encoding="utf-8")
                 click.echo(f"[report written to {json_out}]", err=True)
@@ -596,6 +657,180 @@ def eval(ctx: click.Context, fixture: Path, top_k: int, json_out: Path | None) -
                 await reranker.aclose()
 
     sys.exit(asyncio.run(_run()))
+
+
+@main.command("fsck")
+@click.option("--fix", "auto_fix", is_flag=True,
+              help="Attempt safe auto-repairs (drop missing dynamic roots, prune orphan file-hash rows).")
+@click.option("--json-out", "json_out", type=click.Path(path_type=Path), default=None,
+              help="Write the full report as JSON.")
+@click.pass_context
+def fsck_cmd(ctx: click.Context, auto_fix: bool, json_out: Path | None) -> None:
+    """Phase 23: walk all stores looking for inconsistencies. Reports drift
+    between vector/lexical/graph stores, dangling references, dead dynamic
+    roots, and orphaned file-hash entries. With --fix, applies the safe
+    auto-repairs."""
+    from code_rag.ops import fsck
+    settings = ctx.obj["settings"]
+    vec = build_vector_store(settings)
+    lex = build_lexical_store(settings)
+    if not settings.index_meta_path.exists():
+        click.echo("no index yet -- run `code-rag index` first", err=True)
+        sys.exit(1)
+    meta_text = settings.index_meta_path.read_text("utf-8")
+    from code_rag.models import IndexMeta
+    meta = IndexMeta.model_validate_json(meta_text)
+    vec.open(meta)
+    lex.open()
+    try:
+        report = fsck(settings, vec, lex, auto_fix=auto_fix)
+        click.echo(json.dumps(report.summary(), indent=2))
+        if json_out:
+            json_out.write_text(json.dumps(report.summary(), indent=2), encoding="utf-8")
+        if not report.ok:
+            sys.exit(2)
+    finally:
+        vec.close()
+        lex.close()
+
+
+@main.command("metrics")
+@click.option("--out", "out", type=click.Path(path_type=Path), default=None,
+              help="Write OpenMetrics text to this path. Default: stdout.")
+@click.pass_context
+def metrics_cmd(ctx: click.Context, out: Path | None) -> None:
+    """Phase 23: emit an OpenMetrics-format snapshot of index health.
+
+    Pipe to a file periodically and point Prometheus or local Grafana at
+    it. Free, no external services required.
+    """
+    from code_rag.ops import metrics_text
+    settings = ctx.obj["settings"]
+    vec = build_vector_store(settings)
+    lex = build_lexical_store(settings)
+    if not settings.index_meta_path.exists():
+        click.echo("# code-rag: no index yet (run `code-rag index`)", err=True)
+        sys.exit(1)
+    meta_text_str = settings.index_meta_path.read_text("utf-8")
+    from code_rag.models import IndexMeta
+    meta = IndexMeta.model_validate_json(meta_text_str)
+    vec.open(meta)
+    lex.open()
+    try:
+        text = metrics_text(settings, vec, lex)
+        if out:
+            out.write_text(text, encoding="utf-8")
+        else:
+            click.echo(text)
+    finally:
+        vec.close()
+        lex.close()
+
+
+@main.command("git-log-index")
+@click.option("--root", "root", type=click.Path(exists=True, path_type=Path), default=None,
+              help="Index only this single root. Default: every configured root that's a git repo.")
+@click.option("--max-commits", default=2000, show_default=True, type=int)
+@click.option("--max-chars", default=2400, show_default=True, type=int,
+              help="Per-chunk char cap; longer diffs get truncated with a `git show` pointer.")
+@click.pass_context
+def git_log_index(ctx: click.Context, root: Path | None, max_commits: int, max_chars: int) -> None:
+    """Phase 22: walk `git log -p` and index every (commit x file) diff hunk.
+
+    Run on demand. Once-per-machine bulk job; the live watcher does NOT call
+    this on file events. Re-run after major histories change (e.g. force-push,
+    monorepo merge) -- re-runs are idempotent because chunk_ids are content-
+    addressed (sha + path + diff body).
+    """
+    from code_rag.indexing.git_log import index_git_log
+    settings = ctx.obj["settings"]
+
+    async def _run() -> int:
+        embedder = build_embedder(settings)
+        vec = build_vector_store(settings)
+        lex = build_lexical_store(settings)
+        try:
+            await embedder.health()
+        except Exception as e:
+            click.echo(f"FAIL  embedder: {e}", err=True)
+            return 1
+        meta = ChromaVectorStore.build_meta(
+            embedder_kind=settings.embedder.kind,
+            embedder_model=embedder.model,
+            embedder_dim=embedder.dim,
+        )
+        vec.open(meta)
+        lex.open()
+        try:
+            roots = [root] if root else settings.all_roots()
+            total_chunks = 0
+            for r in roots:
+                rr = r.resolve()
+                chunks = index_git_log(
+                    rr, repo_label=rr.name,
+                    max_commits=max_commits, max_chars_per_chunk=max_chars,
+                )
+                if not chunks:
+                    click.echo(f"  [skip] {rr.name}: no git history (or git missing)")
+                    continue
+                # Embed in batches and upsert.
+                texts = [c.text for c in chunks]
+                vectors = await embedder.embed(texts)
+                vec.upsert(chunks, vectors)
+                lex.upsert(chunks)
+                total_chunks += len(chunks)
+                click.echo(f"  [ok]  {rr.name}: {len(chunks)} diff chunks")
+            click.echo(f"\nTOTAL  {total_chunks} chunks across {len(roots)} root(s)")
+            return 0
+        finally:
+            vec.close()
+            lex.close()
+            if isinstance(embedder, LMStudioEmbedder):
+                await embedder.aclose()
+
+    sys.exit(asyncio.run(_run()))
+
+
+@main.command("eval-mine")
+@click.option("--output", "output", type=click.Path(path_type=Path), required=True,
+              help="Where to write the JSON eval fixture.")
+@click.option("--max-pairs", default=500, show_default=True, type=int)
+@click.option("--transcripts-dir", type=click.Path(path_type=Path),
+              default=None,
+              help="Override transcripts root (default: ~/.claude/projects).")
+@click.option("--include-source/--no-include-source", default=False,
+              help="Keep _source debug fields on each pair.")
+@click.pass_context
+def eval_mine(
+    ctx: click.Context, output: Path, max_pairs: int,
+    transcripts_dir: Path | None, include_source: bool,
+) -> None:
+    """Mine (query, expected_path) eval pairs from your Claude Code transcripts.
+
+    Walks every JSONL under ~/.claude/projects/, finds user questions
+    followed by Claude's first Read/Edit on a file, and emits a fixture
+    compatible with `code-rag eval`. Free, real, in-distribution ground truth.
+
+    Paths are normalized against your configured `[paths].roots`, so the
+    fixture matches what's actually in your index.
+    """
+    from code_rag.eval.mine_transcripts import mine_all
+    settings = ctx.obj["settings"]
+    td = transcripts_dir or (Path.home() / ".claude" / "projects")
+    if not td.exists():
+        click.echo(f"transcripts dir not found: {td}", err=True)
+        sys.exit(2)
+
+    pairs = mine_all(td, settings.all_roots(), max_pairs=max_pairs)
+    cases = [p.to_case() for p in pairs]
+    if not include_source:
+        for c in cases:
+            c.pop("_source", None)
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(cases, indent=2, ensure_ascii=False), encoding="utf-8")
+    click.echo(f"mined {len(cases)} pairs from {td}", err=True)
+    click.echo(f"wrote -> {output}", err=True)
 
 
 @main.command()
@@ -714,13 +949,13 @@ def index_stats(ctx: click.Context) -> None:
     """Show counts and index metadata (no network calls)."""
     settings = ctx.obj["settings"]
     if not settings.index_meta_path.exists():
-        click.echo("no index yet — run `code-rag index`", err=True)
+        click.echo("no index yet -- run `code-rag index`", err=True)
         sys.exit(1)
     meta_text = settings.index_meta_path.read_text("utf-8")
     click.echo(meta_text)
     # Open the collection read-only just to count. The collection name is
     # namespaced by embedder model+dim, so we compute the same hash the store
-    # uses when opening — see ChromaVectorStore._resolved_name.
+    # uses when opening -- see ChromaVectorStore._resolved_name.
     import chromadb
 
     from code_rag.models import IndexMeta
@@ -740,7 +975,7 @@ def index_stats(ctx: click.Context) -> None:
 
 @main.group()
 def roots() -> None:
-    """Manage indexing roots — both the curated `config.toml` set and the
+    """Manage indexing roots -- both the curated `config.toml` set and the
     dynamically auto-added set (via MCP `ensure_workspace_indexed`).
     """
 

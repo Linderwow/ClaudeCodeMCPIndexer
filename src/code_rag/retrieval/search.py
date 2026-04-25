@@ -76,12 +76,17 @@ class HybridSearcher:
         lexical_store: LexicalStore,
         reranker: Reranker,
         graph_store: GraphStore | None = None,
+        hyde_plan: object | None = None,  # HydeRetrieverPlan, optional
     ) -> None:
         self._embed = embedder
         self._vec = vector_store
         self._lex = lexical_store
         self._rerank = reranker
         self._graph = graph_store
+        # Phase 19 HyDE retriever plan. If set, the searcher consults
+        # `plan.plan(query)` to (optionally) add a hypothetical-doc query
+        # arm for natural-language questions. None = pure literal search.
+        self._hyde = hyde_plan
 
     async def search(self, query: str, params: SearchParams) -> list[SearchHit]:
         """Back-compat entry point. Returns a bare list.
@@ -94,27 +99,46 @@ class HybridSearcher:
     async def search_full(self, query: str, params: SearchParams) -> SearchResponse:
         t0 = time.monotonic()
 
-        # 1) Kick off vector + lexical in parallel. Lexical is sync, so punt it
-        #    to a thread.
-        q_vec_task = asyncio.create_task(self._embed.embed([query]))
+        # Phase 19: HyDE plan. Identifier queries get a single-arm plan
+        # (no LLM call); NL/mixed queries get a 2-arm plan with a
+        # hypothetical-doc embedding fused alongside the literal one.
+        if self._hyde is not None:
+            plan = await self._hyde.plan(query)  # type: ignore[attr-defined]
+        else:
+            plan = [(query, 1.0)]
+
+        # 1) Kick off vector queries (one per plan arm) + lexical (single,
+        #    using the LITERAL query — BM25 over a hypothetical chunk would
+        #    add noise without recall lift).
+        embed_inputs = [arm_text for arm_text, _w in plan]
+        q_vec_task = asyncio.create_task(self._embed.embed(embed_inputs))
         lex_task = asyncio.create_task(
             asyncio.to_thread(self._lex.query, query, params.k_lexical),
         )
 
-        q_vec = (await q_vec_task)[0]
+        q_vecs = await q_vec_task
         where = self._build_where(params)
-        vec_hits = await asyncio.to_thread(
-            self._vec.query, q_vec, params.k_vector, where,
-        )
-        lex_hits = await lex_task
 
-        # 2) Apply metadata + path_glob filters.
-        vec_hits = self._apply_filters(vec_hits, params)
-        lex_hits = self._apply_filters(lex_hits, params)
+        # Run vector queries for each plan arm in parallel.
+        vec_tasks = [
+            asyncio.create_task(asyncio.to_thread(
+                self._vec.query, qv, params.k_vector, where,
+            ))
+            for qv in q_vecs
+        ]
+        vec_hits_per_arm = [self._apply_filters(await t, params) for t in vec_tasks]
+        lex_hits = self._apply_filters(await lex_task, params)
 
-        # 3) Fuse.
+        # For symmetry with the previous logging shape, expose the union
+        # candidate count of all arms as `vec_hits`.
+        all_vec_hits = [h for arm in vec_hits_per_arm for h in arm]
+
+        # 2) Filters already applied above.
+        vec_hits = all_vec_hits
+
+        # 3) Fuse — every plan arm contributes a ranked list, plus lexical.
         fused = reciprocal_rank_fusion(
-            [vec_hits, lex_hits],
+            [*vec_hits_per_arm, lex_hits],
             k=params.rrf_k,
             top_k=max(params.k_rerank_in, params.k_final),
         )

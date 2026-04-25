@@ -63,6 +63,17 @@ class ChunkerConfig(BaseModel):
     overlap_chars: int = 0
 
 
+class IndexerConfig(BaseModel):
+    """Parallel-pipeline tuning (Phase 15).
+
+    `parallel_workers` files-in-flight at the chunk+embed stage; store writes
+    are serialized inside the indexer via a single async lock to keep
+    Chroma/Kuzu/FTS upserts ordered.
+    """
+    parallel_workers: int = 4
+    embed_concurrency: int = 4   # async tasks per embed batch (server-side parallel)
+
+
 class WatcherConfig(BaseModel):
     debounce_ms: int = 500
 
@@ -80,6 +91,7 @@ class Settings(BaseModel):
     graph_store: GraphStoreConfig = Field(default_factory=GraphStoreConfig)
     lexical_store: LexicalStoreConfig = Field(default_factory=LexicalStoreConfig)
     chunker: ChunkerConfig = Field(default_factory=ChunkerConfig)
+    indexer: IndexerConfig = Field(default_factory=IndexerConfig)
     watcher: WatcherConfig = Field(default_factory=WatcherConfig)
     mcp: McpConfig = Field(default_factory=McpConfig)
 
@@ -104,6 +116,11 @@ class Settings(BaseModel):
     def dynamic_roots_path(self) -> Path:
         """Registry of runtime-added roots (auto-discovered workspaces)."""
         return self.paths.data_dir / "dynamic_roots.json"
+
+    @property
+    def file_hashes_path(self) -> Path:
+        """Per-file content hash registry — Phase 14 incremental indexing."""
+        return self.paths.data_dir / "file_hashes.db"
 
     def all_roots(self) -> list[Path]:
         """Union of the user's curated `config.toml` roots and any

@@ -182,6 +182,32 @@ TOOLS: list[Tool] = [
         inputSchema={"type": "object", "properties": {}},
     ),
     Tool(
+        name="search_code_anchored",
+        description=(
+            "Phase 21: graph-augmented retrieval. Like search_code, but results "
+            "are RE-RANKED by graph proximity to an anchor symbol you provide. "
+            "Use this when the user's question has TWO parts: a semantic part "
+            "(\"functions that touch session phase\") AND a structural part "
+            "(\"...called by OnBarUpdate\"). Set `anchor_symbol` to the "
+            "structural anchor and `hops` to the radius of related code you "
+            "want boosted (1 = direct callers/callees only). Falls back to "
+            "plain hybrid search if the anchor doesn't resolve."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query":         {"type": "string"},
+                "anchor_symbol": {"type": "string"},
+                "anchor_path":   {"type": "string", "description": "Optional: pin anchor to this file."},
+                "hops":          {"type": "integer", "default": 1, "minimum": 1, "maximum": 4},
+                "k":             {"type": "integer", "default": 8, "minimum": 1, "maximum": 50},
+                "path_glob":     {"type": "string"},
+                "lang":          {"type": "string", "enum": ["python", "c_sharp", "typescript", "tsx", "javascript"]},
+            },
+            "required": ["query", "anchor_symbol"],
+        },
+    ),
+    Tool(
         name="ensure_workspace_indexed",
         description=(
             "Auto-register a repository for indexing. CALL THIS ONCE PER "
@@ -255,16 +281,38 @@ class ServerResources:
         self.lex.open()
         self.graph.open()
 
+        # Phase 19: HyDE retriever plan. Built lazily so the import doesn't
+        # fail when the user doesn't have a chat-completion-capable model
+        # loaded in LM Studio. The plan internally probes /v1/models on
+        # first use and silently falls back to literal-only search if no
+        # suitable LLM is present — so this is safe to wire ALWAYS-ON.
+        # The intent classifier inside the plan ensures identifier queries
+        # never spend an LLM call.
+        from code_rag.retrieval.hyde import HydeRetrieverPlan, LMStudioHyDEGenerator
+        hyde_model = getattr(s.embedder, "hyde_model", None) or "qwen3-1.7b-instruct"
+        try:
+            hyde_gen = LMStudioHyDEGenerator(
+                base_url=s.embedder.base_url,
+                model=str(hyde_model),
+                timeout_s=15.0,
+            )
+            hyde_plan = HydeRetrieverPlan(generator=hyde_gen)
+        except Exception as e:
+            log.warning("mcp.hyde_disabled", err=str(e))
+            hyde_plan = HydeRetrieverPlan(generator=None)
+
         # MCP server is purely a READER. Writes (reindex, ingest) happen via
         # the live watcher or the CLI. This avoids lock contention with the
         # watcher on Kuzu, which only permits a single writer.
         self.searcher = HybridSearcher(
             self.embedder, self.vec, self.lex, self.reranker,
             graph_store=self.graph,
+            hyde_plan=hyde_plan,
         )
         log.info("mcp.resources.open",
                  embedder=self.embedder.model, dim=self.embedder.dim,
-                 chunks=self.vec.count())
+                 chunks=self.vec.count(),
+                 hyde="on" if hyde_plan is not None else "off")
 
     async def close(self) -> None:
         if self.vec is not None:
@@ -429,6 +477,32 @@ async def _tool_index_stats(res: ServerResources, args: dict[str, Any]) -> dict[
     }
 
 
+async def _tool_search_code_anchored(
+    res: ServerResources, args: dict[str, Any],
+) -> dict[str, Any]:
+    """Phase 21: graph-augmented retrieval — hybrid search re-ranked by
+    proximity to an anchor symbol in the call graph."""
+    from code_rag.retrieval.graph_augmented import GraphAugmentedSearcher
+    assert res.searcher is not None
+    params = SearchParams(
+        k_final=int(args.get("k", 8)),
+        k_vector=res.settings.reranker.top_k_in,
+        k_lexical=res.settings.reranker.top_k_in,
+        k_rerank_in=res.settings.reranker.top_k_in,
+        path_glob=args.get("path_glob"),
+        language=args.get("lang"),
+    )
+    aug = GraphAugmentedSearcher(res.searcher, res.graph)
+    result = await aug.search(
+        str(args["query"]),
+        params,
+        anchor_symbol=str(args["anchor_symbol"]),
+        anchor_path=args.get("anchor_path"),
+        hops=int(args.get("hops", 1)),
+    )
+    return result.as_dict()
+
+
 async def _tool_ensure_workspace_indexed(
     res: ServerResources, args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -518,6 +592,7 @@ async def _tool_ensure_workspace_indexed(
 
 _HANDLERS = {
     "search_code":               _tool_search_code,
+    "search_code_anchored":      _tool_search_code_anchored,
     "get_chunk_text":            _tool_get_chunk_text,
     "get_symbol":                _tool_get_symbol,
     "get_callers":               _tool_get_callers,

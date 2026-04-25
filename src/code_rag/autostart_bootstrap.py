@@ -18,6 +18,7 @@ after a reboot without having to attach a terminal.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 import traceback
 from datetime import UTC, datetime
@@ -30,6 +31,7 @@ from code_rag.factory import (
     build_vector_store,
 )
 from code_rag.graph.ingest import GraphIngester
+from code_rag.indexing.file_hash import FileHashRegistry
 from code_rag.indexing.indexer import Indexer
 from code_rag.lms_ctl import ensure_lm_studio_ready
 from code_rag.logging import configure, get
@@ -118,10 +120,17 @@ async def _run() -> int:
         # Transient graph ingest: open+close Kuzu per event so MCP/CLI readers
         # can query the graph in the gaps (Kuzu 0.11 takes an exclusive OS
         # file lock even in read-only mode).
+        # File-hash registry: skip parse+embed when content unchanged (Phase 14).
+        hashes = FileHashRegistry(settings.file_hashes_path)
+        try:
+            hashes.open()
+        except Exception as e:
+            _plain_log(autostart_log, f"file_hash open failed (non-fatal): {e}")
         indexer = Indexer(
             settings, embedder, vec,
             lexical_store=lex,
             graph_store=GraphIngester.transient(settings.kuzu_dir),
+            file_hashes=hashes,
         )
 
         try:
@@ -131,6 +140,27 @@ async def _run() -> int:
             _plain_log(autostart_log, f"catch-up reindex failed (non-fatal): {e}")
             log.exception("autostart.catchup_failed")
 
+        # Phase 23: post-catch-up fsck with auto-repair. Cheap (a few
+        # seconds), non-destructive (only safe repairs), and surfaces drift
+        # / orphans before they become user-visible bugs. Runs once per
+        # logon — periodic re-runs are handled by a separate scheduled task.
+        try:
+            from code_rag.ops import fsck
+            report = fsck(settings, vec, lex, auto_fix=True)
+            _plain_log(autostart_log,
+                       f"fsck: ok={report.ok} issues={len(report.issues)} fixed={len(report.fixed)}")
+        except Exception as e:
+            _plain_log(autostart_log, f"fsck failed (non-fatal): {e}")
+
+        # Phase 23: snapshot OpenMetrics on each boot so the operator can
+        # eyeball trends across reboots without a running Prometheus server.
+        try:
+            from code_rag.ops import metrics_text
+            metrics_path = settings.paths.log_dir / "metrics.prom"
+            metrics_path.write_text(metrics_text(settings, vec, lex), encoding="utf-8")
+        except Exception as e:
+            _plain_log(autostart_log, f"metrics snapshot failed (non-fatal): {e}")
+
         _plain_log(autostart_log, "watcher starting")
         await watch_forever(settings, indexer)
         _plain_log(autostart_log, "watcher exited normally")
@@ -138,6 +168,8 @@ async def _run() -> int:
     finally:
         vec.close()
         lex.close()
+        with contextlib.suppress(Exception):
+            hashes.close()
 
 
 def main() -> None:
