@@ -42,12 +42,22 @@ class EmbedderConfig(BaseModel):
 
 
 class RerankerConfig(BaseModel):
-    kind: Literal["lm_studio"] = "lm_studio"
+    # "lm_studio" : the OpenAI-compatible /v1/rerank endpoint (Jina-style).
+    #               LM Studio itself does NOT implement this endpoint — kept
+    #               for backends that do (vLLM, text-embeddings-inference).
+    # "lm_chat"   : Phase 24 listwise reranker that uses /v1/chat/completions
+    #               on a small chat model. The right choice for LM Studio.
+    # "noop"      : explicit no-op, useful for ablation eval and CI.
+    kind: Literal["lm_studio", "lm_chat", "noop"] = "lm_studio"
     base_url: str
     model: str
     top_k_in: int = 50
     top_k_out: int = 8
     timeout_s: float = 60.0
+    # Phase 24: for kind="lm_chat" only. How many top candidates to send to
+    # the LLM (the rest stay in their RRF order). Bounded for latency.
+    chat_max_candidates: int = 20
+    chat_max_chars_per_doc: int = 300
 
 
 class VectorStoreConfig(BaseModel):

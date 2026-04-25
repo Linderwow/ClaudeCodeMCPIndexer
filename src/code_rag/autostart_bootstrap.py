@@ -72,9 +72,15 @@ async def _run() -> int:
     log.info("autostart.begin", python=sys.executable)
 
     # 2) Ensure LM Studio is up with the embedder loaded.
+    # Pre-load any auxiliary chat/rerank models so the first MCP query after
+    # boot doesn't pay a 5-10s JIT-load penalty.
     extra: tuple[str, ...] = ()
-    if settings.reranker.kind == "lm_studio" and settings.reranker.model:
-        extra = (settings.reranker.model,)
+    rer = settings.reranker
+    if rer.kind in ("lm_studio", "lm_chat") and rer.model:
+        extra = (*extra, rer.model)
+    hyde_model = getattr(settings.embedder, "hyde_model", None)
+    if hyde_model and hyde_model not in extra:
+        extra = (*extra, str(hyde_model))
     result = await asyncio.to_thread(
         ensure_lm_studio_ready,
         settings.embedder.base_url,

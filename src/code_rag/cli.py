@@ -680,7 +680,26 @@ def eval(
         vec.open(meta)
         lex.open()
         try:
-            searcher = HybridSearcher(embedder, vec, lex, reranker)
+            # Wire HyDE if a chat model is configured. Mirrors the MCP server's
+            # construction (mcp_server/server.py::ServerResources.open) so the
+            # eval measures the SAME pipeline production uses, not a leaner one.
+            from code_rag.retrieval.hyde import HydeRetrieverPlan, LMStudioHyDEGenerator
+            hyde_model = getattr(settings.embedder, "hyde_model", None)
+            try:
+                hyde_gen = (
+                    LMStudioHyDEGenerator(
+                        base_url=settings.embedder.base_url,
+                        model=str(hyde_model),
+                        timeout_s=15.0,
+                    ) if hyde_model else None
+                )
+                hyde_plan = HydeRetrieverPlan(generator=hyde_gen)
+            except Exception as e:
+                click.echo(f"[warn] HyDE init failed, falling back to literal-only: {e}", err=True)
+                hyde_plan = HydeRetrieverPlan(generator=None)
+            searcher = HybridSearcher(
+                embedder, vec, lex, reranker, hyde_plan=hyde_plan,
+            )
             cases = load_cases(fixture)
             index_meta_dict = json.loads(settings.index_meta_path.read_text("utf-8"))
             # Call run_eval (async) directly -- run_eval_sync wraps asyncio.run

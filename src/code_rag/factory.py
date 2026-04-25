@@ -12,7 +12,9 @@ from code_rag.interfaces.graph_store import GraphStore
 from code_rag.interfaces.lexical_store import LexicalStore
 from code_rag.interfaces.reranker import Reranker
 from code_rag.interfaces.vector_store import VectorStore
+from code_rag.rerankers.lm_chat import LMStudioChatReranker
 from code_rag.rerankers.lm_studio import LMStudioReranker
+from code_rag.rerankers.noop import NoopReranker
 from code_rag.stores.chroma_vector import ChromaVectorStore
 from code_rag.stores.kuzu_graph import KuzuGraphStore
 from code_rag.stores.sqlite_lexical import SqliteLexicalStore
@@ -71,6 +73,16 @@ def build_reranker(settings: Settings) -> Reranker:
             model=r.model,
             timeout_s=r.timeout_s,
         )
+    if r.kind == "lm_chat":
+        return LMStudioChatReranker(
+            base_url=r.base_url,
+            model=r.model,
+            timeout_s=r.timeout_s,
+            max_candidates=r.chat_max_candidates,
+            max_chars_per_doc=r.chat_max_chars_per_doc,
+        )
+    if r.kind == "noop":
+        return NoopReranker()
     raise ValueError(f"Unknown reranker kind: {r.kind}")
 
 

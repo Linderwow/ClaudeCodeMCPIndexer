@@ -289,12 +289,17 @@ class ServerResources:
         # The intent classifier inside the plan ensures identifier queries
         # never spend an LLM call.
         from code_rag.retrieval.hyde import HydeRetrieverPlan, LMStudioHyDEGenerator
-        hyde_model = getattr(s.embedder, "hyde_model", None) or "qwen3-1.7b-instruct"
+        # Resolve from config; if no hyde_model is set, run literal-only.
+        # Don't fabricate a default model id — mismatching what's loaded in
+        # LM Studio just makes every HyDE call 404 and adds latency.
+        hyde_model = getattr(s.embedder, "hyde_model", None)
         try:
-            hyde_gen = LMStudioHyDEGenerator(
-                base_url=s.embedder.base_url,
-                model=str(hyde_model),
-                timeout_s=15.0,
+            hyde_gen = (
+                LMStudioHyDEGenerator(
+                    base_url=s.embedder.base_url,
+                    model=str(hyde_model),
+                    timeout_s=15.0,
+                ) if hyde_model else None
             )
             hyde_plan = HydeRetrieverPlan(generator=hyde_gen)
         except Exception as e:
