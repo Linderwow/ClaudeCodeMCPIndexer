@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>code-rag dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo-dot"></span>
+        <h1>code-rag</h1>
+        <span class="version" id="version">·</span>
+      </div>
+      <div class="topbar-actions">
+        <button id="btn-start-all" class="btn btn-primary" type="button">
+          <span class="btn-dot"></span> Start all
+        </button>
+        <button id="btn-stop-all" class="btn btn-danger" type="button">
+          <span class="btn-dot"></span> Stop all
+        </button>
+      </div>
+    </header>
+
+    <section class="grid">
+      <article class="card" id="card-lms">
+        <header class="card-header">
+          <h2>LM Studio</h2>
+          <span class="status-pill" id="lms-status">probing…</span>
+        </header>
+        <div class="card-body">
+          <div class="kv"><span>Server</span><strong id="lms-server">—</strong></div>
+          <div class="kv"><span>Endpoint</span><code id="lms-base">—</code></div>
+          <h3 class="subhead">Loaded models</h3>
+          <div id="lms-models" class="model-list">—</div>
+          <h3 class="subhead">Available (downloaded)</h3>
+          <div id="lms-available" class="muted small">—</div>
+        </div>
+        <footer class="card-actions">
+          <button id="btn-start-lms" class="btn btn-ghost" type="button">Start server</button>
+          <button id="btn-stop-lms" class="btn btn-ghost-danger" type="button">Stop server</button>
+        </footer>
+      </article>
+
+      <article class="card" id="card-watcher">
+        <header class="card-header">
+          <h2>Live watcher</h2>
+          <span class="status-pill" id="watcher-status">—</span>
+        </header>
+        <div class="card-body">
+          <div class="kv"><span>Task</span><code>code-rag-watch</code></div>
+          <div class="kv"><span>Last run</span><span id="watcher-lastrun">—</span></div>
+          <div class="kv"><span>Last result</span><span id="watcher-lastresult">—</span></div>
+          <div class="kv"><span>Active PIDs</span><span id="watcher-pids">—</span></div>
+        </div>
+        <footer class="card-actions">
+          <button id="btn-start-watcher" class="btn btn-ghost" type="button">Start watcher</button>
+          <button id="btn-stop-watcher" class="btn btn-ghost-danger" type="button">Stop watcher</button>
+        </footer>
+      </article>
+
+      <article class="card" id="card-index">
+        <header class="card-header">
+          <h2>Index</h2>
+          <span class="status-pill" id="index-status">—</span>
+        </header>
+        <div class="card-body">
+          <div class="kv"><span>Chunks</span><strong id="index-chunks">—</strong></div>
+          <div class="kv"><span>Embedder</span><span id="index-embedder">—</span></div>
+          <div class="kv"><span>Dim</span><span id="index-dim">—</span></div>
+          <div class="kv"><span>Schema</span><span id="index-schema">—</span></div>
+          <div class="kv"><span>Updated</span><span id="index-updated">—</span></div>
+        </div>
+      </article>
+
+      <article class="card" id="card-resources">
+        <header class="card-header">
+          <h2>Resources</h2>
+          <span class="status-pill ok" id="resources-status">live</span>
+        </header>
+        <div class="card-body">
+          <h3 class="subhead">System RAM</h3>
+          <div class="bar"><div class="bar-fill" id="ram-bar"></div></div>
+          <div class="kv small"><span id="ram-label">—</span><span id="ram-pct">—</span></div>
+          <h3 class="subhead">GPU VRAM</h3>
+          <div class="bar"><div class="bar-fill gpu" id="gpu-bar"></div></div>
+          <div class="kv small"><span id="gpu-label">—</span><span id="gpu-pct">—</span></div>
+          <div class="kv small"><span>GPU util / temp</span><span id="gpu-util">—</span></div>
+        </div>
+      </article>
+    </section>
+
+    <section class="logpane">
+      <header class="card-header">
+        <h2>Activity</h2>
+        <button id="btn-clear-log" class="btn btn-link" type="button">clear</button>
+      </header>
+      <div id="log" class="log" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

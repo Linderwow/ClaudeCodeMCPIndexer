@@ -495,6 +495,27 @@ def mcp(ctx: click.Context) -> None:
 
 
 @main.command()
+@click.option("--host", default="127.0.0.1", show_default=True,
+              help="Bind address. KEEP at 127.0.0.1 unless you know what you're doing.")
+@click.option("--port", default=7321, show_default=True, type=int)
+@click.option("--no-browser", is_flag=True,
+              help="Don't auto-open the dashboard in a web browser.")
+@click.pass_context
+def dashboard(ctx: click.Context, host: str, port: int, no_browser: bool) -> None:
+    """Launch the local control dashboard in a web browser.
+
+    Big START/STOP buttons for LM Studio + the watcher + loaded models. Polls
+    /api/status every 2s so the UI is always fresh. Ctrl-C in this terminal
+    to stop the dashboard server (the actual stack keeps running).
+    """
+    _ = ctx  # Settings are loaded per-request inside the server module.
+    from code_rag.dashboard.server import serve
+    click.echo(f"code-rag dashboard -> http://{host}:{port}/")
+    click.echo("Ctrl-C to stop (the LM Studio + watcher stack keeps running).")
+    serve(host=host, port=port, open_browser=not no_browser)
+
+
+@main.command()
 @click.pass_context
 def bootstrap(ctx: click.Context) -> None:
     """Ensure LM Studio is running with the embedder loaded (what autostart does).
