@@ -38,13 +38,40 @@
     return r.json();
   }
 
-  // ---- button visibility / busy state ----
-  function toggleButton(id, show) {
-    const el = $(id);
-    if (!el) return;
-    // Use `hidden` so the layout collapses cleanly (vs. visibility: hidden).
-    el.hidden = !show;
+  // ---- toggle button rendering --------------------------------------------
+  // A "toggle button" is one button per pair (all / lms / watcher) that
+  // flips between Start vs Stop based on current state. The button carries
+  // its current intended action in `data-action` so the click handler
+  // dispatches to the right endpoint without separate handlers per direction.
+
+  // Render config: each toggle target has classes for both states.
+  const TOGGLE_CLASSES = {
+    all:     { start: 'btn btn-primary',    stop: 'btn btn-danger' },
+    lms:     { start: 'btn btn-ghost',      stop: 'btn btn-ghost-danger' },
+    watcher: { start: 'btn btn-ghost',      stop: 'btn btn-ghost-danger' },
+  };
+  const TOGGLE_LABELS = {
+    all:     { start: 'Start all',          stop: 'Stop all' },
+    lms:     { start: 'Start server',       stop: 'Stop server' },
+    watcher: { start: 'Start watcher',      stop: 'Stop watcher' },
+  };
+
+  function renderToggle(id, target, currentlyUp) {
+    const btn = $(id);
+    if (!btn) return;
+    const action = currentlyUp ? 'stop' : 'start';
+    btn.dataset.action = action;
+    btn.dataset.target = target;
+    btn.className = TOGGLE_CLASSES[target][action];
+    // Topbar buttons keep the leading dot; cards have plain labels.
+    const labelEl = btn.querySelector('.btn-label');
+    if (labelEl) {
+      labelEl.textContent = TOGGLE_LABELS[target][action];
+    } else {
+      btn.textContent = TOGGLE_LABELS[target][action];
+    }
   }
+
   function busy(btn, on) {
     if (!btn) return;
     btn.classList.toggle('is-busy', on);
@@ -113,9 +140,7 @@
       lmsPill.className = 'status-pill err';
     }
     $('lms-base').textContent = lms.base_url || '—';
-    // Toggle the per-component buttons: only the action that's possible right now is shown.
-    toggleButton('btn-start-lms', !lmsUp);
-    toggleButton('btn-stop-lms', lmsUp);
+    renderToggle('btn-toggle-lms', 'lms', lmsUp);
 
     // Loaded models
     const modelsEl = $('lms-models');
@@ -174,16 +199,14 @@
     $('watcher-lastrun').textContent = formatTs(w.last_run);
     $('watcher-lastresult').textContent = formatTaskResult(w.last_result);
     $('watcher-pids').textContent = (w.pythonw_pids || []).join(', ') || '—';
-    toggleButton('btn-start-watcher', !watcherRunning);
-    toggleButton('btn-stop-watcher', watcherRunning);
+    renderToggle('btn-toggle-watcher', 'watcher', watcherRunning);
 
-    // ---- topbar Start All / Stop All ----
-    // "All" = LM Studio up AND watcher running. Mixed states show both buttons
-    // so the user can normalize either direction.
-    const allUp   = lmsUp && watcherRunning;
-    const allDown = !lmsUp && !watcherRunning;
-    toggleButton('btn-start-all', !allUp);    // hide only when fully up
-    toggleButton('btn-stop-all',  !allDown);  // hide only when fully down
+    // ---- topbar Start all / Stop all ----
+    // "All" is "up" iff BOTH LM Studio AND the watcher are up. Any partial
+    // state renders as "Start all" so the click normalizes everything to up.
+    // (Stopping a partial state is the user's call via the per-card buttons.)
+    const allUp = lmsUp && watcherRunning;
+    renderToggle('btn-toggle-all', 'all', allUp);
 
     // ---- Index ----
     const idx = s.index || {};
@@ -258,34 +281,34 @@
   function pausePolling() { paused = true; }
   function resumePolling() { paused = false; }
 
-  // ---- button wiring ----
+  // ---- click wiring ----
+  // Each toggle button carries its current intent in data-action ("start"|
+  // "stop") and its target in data-target ("all"|"lms"|"watcher"). One
+  // delegated handler per button dispatches to the right endpoint based on
+  // those attrs at click time, so the wiring doesn't need to be re-bound
+  // when the toggle flips.
+  function wireToggle(id) {
+    const btn = $(id);
+    if (!btn) return;
+    btn.addEventListener('click', withBusy(btn, async () => {
+      const action = btn.dataset.action;
+      const target = btn.dataset.target;
+      const path = `/api/${action}/${target}`;
+      // For stop_all, keep LM Studio server alive by default (other clients
+      // may be using it). User can stop the LMS server explicitly via the
+      // per-card button.
+      const body = (target === 'all' && action === 'stop')
+        ? { stop_lm_studio: false } : {};
+      logLine(`${action}_${target} -> running…`, 'info');
+      const r = await postJSON(path, body);
+      logSteps(`${action}_${target}`, r);
+    }));
+  }
+
   function wireButtons() {
-    $('btn-start-all').addEventListener('click', withBusy($('btn-start-all'), async () => {
-      logLine('start_all -> running…', 'info');
-      const r = await postJSON('/api/start/all', {});
-      logSteps('start_all', r);
-    }));
-    $('btn-stop-all').addEventListener('click', withBusy($('btn-stop-all'), async () => {
-      logLine('stop_all -> running…', 'info');
-      const r = await postJSON('/api/stop/all', { stop_lm_studio: false });
-      logSteps('stop_all', r);
-    }));
-    $('btn-start-lms').addEventListener('click', withBusy($('btn-start-lms'), async () => {
-      const r = await postJSON('/api/start/lms', {});
-      logSteps('start_lms', r);
-    }));
-    $('btn-stop-lms').addEventListener('click', withBusy($('btn-stop-lms'), async () => {
-      const r = await postJSON('/api/stop/lms', {});
-      logSteps('stop_lms', r);
-    }));
-    $('btn-start-watcher').addEventListener('click', withBusy($('btn-start-watcher'), async () => {
-      const r = await postJSON('/api/start/watcher', {});
-      logSteps('start_watcher', r);
-    }));
-    $('btn-stop-watcher').addEventListener('click', withBusy($('btn-stop-watcher'), async () => {
-      const r = await postJSON('/api/stop/watcher', {});
-      logSteps('stop_watcher', r);
-    }));
+    wireToggle('btn-toggle-all');
+    wireToggle('btn-toggle-lms');
+    wireToggle('btn-toggle-watcher');
     $('btn-clear-log').addEventListener('click', () => { logEl.innerHTML = ''; });
   }
 

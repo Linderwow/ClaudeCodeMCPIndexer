@@ -15,11 +15,13 @@
         <span class="version" id="version">·</span>
       </div>
       <div class="topbar-actions">
-        <button id="btn-start-all" class="btn btn-primary" type="button">
-          <span class="btn-dot"></span> Start all
-        </button>
-        <button id="btn-stop-all" class="btn btn-danger" type="button">
-          <span class="btn-dot"></span> Stop all
+        <!-- Single button that flips between Start all / Stop all based on
+             status. The actual label, class, and action are set by app.js
+             from /api/status. The default state shown here (Start all) is
+             what we render before the first poll completes. -->
+        <button id="btn-toggle-all" class="btn btn-primary" type="button"
+                data-action="start" data-target="all">
+          <span class="btn-dot"></span> <span class="btn-label">Start all</span>
         </button>
       </div>
     </header>
@@ -39,8 +41,8 @@
           <div id="lms-available" class="muted small">—</div>
         </div>
         <footer class="card-actions">
-          <button id="btn-start-lms" class="btn btn-ghost" type="button">Start server</button>
-          <button id="btn-stop-lms" class="btn btn-ghost-danger" type="button">Stop server</button>
+          <button id="btn-toggle-lms" class="btn btn-ghost" type="button"
+                  data-action="start" data-target="lms">Start server</button>
         </footer>
       </article>
 
@@ -56,8 +58,8 @@
           <div class="kv"><span>Active PIDs</span><span id="watcher-pids">—</span></div>
         </div>
         <footer class="card-actions">
-          <button id="btn-start-watcher" class="btn btn-ghost" type="button">Start watcher</button>
-          <button id="btn-stop-watcher" class="btn btn-ghost-danger" type="button">Stop watcher</button>
+          <button id="btn-toggle-watcher" class="btn btn-ghost" type="button"
+                  data-action="start" data-target="watcher">Start watcher</button>
         </footer>
       </article>
 
