@@ -31,6 +31,14 @@ class EmbedderConfig(BaseModel):
     dim: int = 0
     timeout_s: float = 60.0
     batch: int = 32
+    # Phase 17: opt-in shorthand for one of the curated code-specialized
+    # presets (e.g. "bge-code-v1", "codesage-large-v2", "qwen3-embedding-4b").
+    # When set AND `model` is left at its default, factory.build_embedder
+    # routes through the preset (auto-resolves the right LM Studio model id).
+    preset: str | None = None
+    # Phase 19: optional small chat-completion model for HyDE generation.
+    # If not set or not loaded, HyDE silently falls back to literal-only.
+    hyde_model: str | None = None
 
 
 class RerankerConfig(BaseModel):

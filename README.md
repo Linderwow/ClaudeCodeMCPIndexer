@@ -61,11 +61,38 @@ code-rag roots prune --days 30                # drop any dynamic root not used i
 
 ---
 
-## One-time setup
+## One-command bootstrap
 
+**Windows:**
 ```powershell
 git clone <repo> code-rag-mcp
 cd code-rag-mcp
+.\scripts\setup.ps1
+```
+
+**macOS / Linux:**
+```bash
+git clone <repo> code-rag-mcp
+cd code-rag-mcp
+./scripts/setup.sh
+```
+
+What the bootstrap does (idempotent — safe to rerun):
+1. Verifies Python 3.11+ on PATH
+2. Creates `.venv/` and `pip install -e .[dev]`
+3. Copies `config.example.toml` -> `config.toml`
+4. Detects LM Studio CLI; downloads + loads the embedder via `lms get` + `lms load`
+5. Best-effort loads the reranker (search degrades gracefully if missing)
+6. Runs `code-rag install` (probes LM Studio, builds initial index, wires Claude Code MCP entry, registers autostart)
+7. macOS: installs a `launchd` LaunchAgent. Linux: enables a `systemd --user` unit. Windows: registers a Task Scheduler entry.
+
+After it finishes you should be able to:
+- Open Claude Code in any repo and ask a question -> the MCP server auto-spawns and `ensure_workspace_indexed` registers the new repo
+- Reboot once -> the watcher fires automatically and stays running
+
+If you skipped the bootstrap or want to do it by hand:
+
+```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
@@ -114,6 +141,17 @@ code-rag search "UserService" --lang typescript
 code-rag callers getById
 code-rag get-symbol OnBarUpdate
 code-rag index-stats
+```
+
+## Health & ops commands
+
+```powershell
+code-rag doctor               # full readiness check (config, LM Studio, index, drift, autostart)
+code-rag fsck --fix           # repair index inconsistencies (orphan rows, dead dynamic roots)
+code-rag metrics              # OpenMetrics snapshot (Prometheus / Grafana JSON datasource ready)
+code-rag git-log-index        # one-shot git history -> diff chunks (Phase 22)
+code-rag embedder list        # list code-specialized embedder presets
+code-rag embedder switch bge-code-v1   # auto-download + config edit + wipe (Phase 17 A/B)
 ```
 
 ## Evaluate retrieval quality

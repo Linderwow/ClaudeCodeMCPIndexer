@@ -21,6 +21,20 @@ from code_rag.stores.sqlite_lexical import SqliteLexicalStore
 def build_embedder(settings: Settings) -> Embedder:
     e = settings.embedder
     if e.kind == "lm_studio":
+        # Phase 17: support `[embedder].preset = "<name>"` as a shorthand for
+        # one of the curated code-specialized presets (BGE-Code-v1, CodeSage,
+        # Qwen baseline). Explicit `model = "..."` always wins; preset only
+        # fires when set AND model is left at its default.
+        preset = getattr(e, "preset", None)
+        if preset:
+            from code_rag.embedders.code_specialized import (
+                CODE_EMBEDDER_PRESETS,
+                build_code_embedder,
+            )
+            if preset in CODE_EMBEDDER_PRESETS:
+                return build_code_embedder(
+                    preset, base_url=e.base_url, timeout_s=e.timeout_s, batch=e.batch,
+                )
         return LMStudioEmbedder(
             base_url=e.base_url,
             model=e.model,

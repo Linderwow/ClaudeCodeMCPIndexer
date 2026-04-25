@@ -12,7 +12,7 @@ either a model download or a system-binary install you should supervise.
 | 14 | Per-chunk hash; skip unchanged | ✅ shipped | `data/file_hashes.db`; idempotent re-runs are now ~30 s instead of 4 h |
 | 15 | Parallel pipeline | ✅ shipped | `[indexer].parallel_workers=4`; bounded `asyncio.gather` + store-write lock |
 | 16 | Tree-sitter tag queries | ✅ shipped | Vendored `.scm` files for C# / TS / JS; runner supports any grammar that ships `tags.scm` |
-| 17 | A/B 3 free code embedders | 🛠 scaffolded | Adapters wired (Qwen baseline / BGE-Code-v1 / CodeSage-v2); `lms get` + reindex to flip |
+| 17 | A/B 3 free code embedders | ✅ shipped | `code-rag embedder switch <preset>` does `lms get` + config edit + wipe automatically. Then `code-rag index` to rebuild. |
 | 18 | SCIP semantic indexing | 🛠 scaffolded | Loader contract + Kuzu mapping; `pip install scip-python` to enable |
 | 19 | HyDE + intent classifier | ✅ shipped | Local LM Studio LLM; intent-gated so identifier queries skip the LLM call |
 | 20 | ColBERT v2 late-interaction | 🛠 scaffolded | `LateInteractionRetriever` interface + `NullLateInteraction` no-op; `pip install colbert-ai` to enable |

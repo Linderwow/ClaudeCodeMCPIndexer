@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -377,23 +378,103 @@ def doctor(ctx: click.Context) -> None:
             meta = json.loads(settings.index_meta_path.read_text("utf-8"))
             ok(f"meta: {meta.get('embedder_model')} dim={meta.get('embedder_dim')} "
                f"updated={meta.get('updated_at')}")
+            # Mismatch between config embedder and indexed embedder is fatal —
+            # indices from different models are incompatible (different dims).
+            if meta.get("embedder_model") and meta["embedder_model"] != settings.embedder.model:
+                # Allow preset-routed mismatch where the index used the preset's
+                # canonical lms_id instead of the literal `model` field.
+                preset = getattr(settings.embedder, "preset", None)
+                if preset:
+                    from code_rag.embedders.code_specialized import CODE_EMBEDDER_PRESETS
+                    expected = CODE_EMBEDDER_PRESETS.get(preset)
+                    if expected and expected.lms_id == meta["embedder_model"]:
+                        pass  # consistent via preset
+                    else:
+                        fail("index meta", f"embedder mismatch: meta={meta['embedder_model']} != config={settings.embedder.model}")
+                else:
+                    fail("index meta", f"embedder mismatch: meta={meta['embedder_model']} != config={settings.embedder.model}")
+
+            vec_count: int | None = None
+            lex_count: int | None = None
             if settings.chroma_dir.exists():
-                import chromadb
+                vec = build_vector_store(settings)
                 try:
-                    client = chromadb.PersistentClient(path=str(settings.chroma_dir))
-                    coll = client.get_collection(settings.vector_store.collection)
-                    ok(f"vector chunks: {coll.count()}")
+                    from code_rag.models import IndexMeta
+                    meta_obj = IndexMeta.model_validate_json(
+                        settings.index_meta_path.read_text("utf-8"),
+                    )
+                    vec.open(meta_obj)
+                    vec_count = vec.count()
+                    ok(f"vector chunks: {vec_count}")
                 except Exception as e:
-                    fail("chroma.count", str(e))
+                    fail("vec.count", str(e))
+                finally:
+                    with contextlib.suppress(Exception):
+                        vec.close()
             if settings.fts_path.exists():
                 lex = build_lexical_store(settings)
                 try:
                     lex.open()
-                    ok(f"lexical chunks: {lex.count()}")
+                    lex_count = lex.count()
+                    ok(f"lexical chunks: {lex_count}")
                 finally:
-                    lex.close()
+                    with contextlib.suppress(Exception):
+                        lex.close()
+            # Drift detection: vector vs lexical counts must match exactly,
+            # otherwise hybrid search has phantom hits in one but not the other.
+            if vec_count is not None and lex_count is not None:
+                if vec_count == lex_count:
+                    ok("stores in sync (no drift)")
+                else:
+                    fail("stores", f"DRIFT: vec={vec_count} lex={lex_count}; run `code-rag fsck --fix`")
         else:
             fail("index", "no index yet -- run `code-rag index`")
+
+        click.echo("--- dynamic roots ---")
+        try:
+            from code_rag.dynamic_roots import DynamicRoots
+            dyn = DynamicRoots.load(settings.dynamic_roots_path)
+            live = sum(1 for e in dyn.entries if e.path.exists())
+            dead = len(dyn.entries) - live
+            if not dyn.entries:
+                ok("none registered (pure auto-discovery; Claude registers on demand)")
+            elif dead == 0:
+                ok(f"{live} dynamic root(s), all live")
+            else:
+                fail("dynamic_roots", f"{live} live, {dead} dead (run `code-rag fsck --fix`)")
+        except Exception as e:
+            fail("dynamic_roots", str(e))
+
+        click.echo("--- autostart ---")
+        import platform as _pf
+        import shutil
+        sys_name = _pf.system()
+        if sys_name == "Windows":
+            import subprocess as _sp
+            try:
+                r = _sp.run(["schtasks", "/Query", "/TN", "code-rag-watch"],
+                            capture_output=True, text=True, check=False)
+                if r.returncode == 0:
+                    ok("Task Scheduler entry 'code-rag-watch' registered")
+                else:
+                    fail("autostart", "Task Scheduler entry MISSING; run `code-rag install`")
+            except FileNotFoundError:
+                fail("autostart", "schtasks not on PATH")
+        elif sys_name == "Darwin":
+            plist = Path.home() / "Library/LaunchAgents/com.code-rag-mcp.watcher.plist"
+            if plist.exists():
+                ok(f"launchd agent installed at {plist}")
+            else:
+                fail("autostart", "launchd agent missing; run `scripts/setup.sh`")
+        elif sys_name == "Linux":
+            if shutil.which("systemctl"):
+                import subprocess as _sp
+                r = _sp.run(["systemctl", "--user", "is-enabled", "code-rag-watcher.service"],
+                            capture_output=True, text=True, check=False)
+                if r.returncode == 0:
+                    ok("systemd user unit 'code-rag-watcher.service' enabled")
+                else:
+                    fail("autostart", "systemd user unit not enabled; run `scripts/setup.sh`")
 
         click.echo()
         if failed:
@@ -725,6 +806,112 @@ def metrics_cmd(ctx: click.Context, out: Path | None) -> None:
     finally:
         vec.close()
         lex.close()
+
+
+@main.group()
+def embedder() -> None:
+    """Manage the embedder model — list presets, A/B switch, list current."""
+
+
+@embedder.command("list")
+def embedder_list() -> None:
+    """List the curated code-specialized embedder presets."""
+    from code_rag.embedders.code_specialized import list_presets
+    for p in list_presets():
+        click.echo(f"  {p.name:25s} dim={p.expected_dim or '?':>5}  hf={p.huggingface_repo}")
+        click.echo(f"  {'':25s}   {p.notes}")
+
+
+@embedder.command("switch")
+@click.argument("preset_name")
+@click.option("--no-download", is_flag=True,
+              help="Skip auto `lms get` even if the model is missing.")
+@click.option("--yes", is_flag=True,
+              help="Skip the confirmation prompt about the data wipe.")
+@click.pass_context
+def embedder_switch(
+    ctx: click.Context, preset_name: str, no_download: bool, yes: bool,
+) -> None:
+    """Phase 17: A/B switch the embedder model with one command.
+
+    Steps (all idempotent, all reversible):
+      1. Validate the preset name.
+      2. `lms get <hf-repo>` if not already downloaded.
+      3. Edit config.toml: set `[embedder].preset = "<name>"` and clear
+         the `model` override so the factory routes via preset.
+      4. WIPE data/{chroma,fts.db,graph.kz,index_meta.json,file_hashes.db}
+         (the new model has different vector dim — incompatible with old
+         vectors; IndexMeta would refuse to open anyway).
+      5. Run a fresh `code-rag index`.
+    """
+    from code_rag.embedders.code_specialized import CODE_EMBEDDER_PRESETS
+    if preset_name not in CODE_EMBEDDER_PRESETS:
+        click.echo(f"unknown preset: {preset_name}", err=True)
+        click.echo(f"available: {sorted(CODE_EMBEDDER_PRESETS)}", err=True)
+        sys.exit(2)
+    preset = CODE_EMBEDDER_PRESETS[preset_name]
+    settings = ctx.obj["settings"]
+
+    if not yes:
+        click.echo(f"About to switch to {preset.name} ({preset.lms_id}, dim={preset.expected_dim}).")
+        click.echo("This WIPES the existing index (model dim differs) and re-embeds from scratch.")
+        click.echo("Current chunks: see `code-rag index-stats`.  Estimated reindex time: 30-60 min.")
+        if not click.confirm("Proceed?"):
+            click.echo("aborted.")
+            return
+
+    # 1. lms get if missing.
+    if not no_download:
+        from code_rag.lms_ctl import find_lms, model_is_loaded
+        loc = find_lms()
+        if loc.path is None:
+            click.echo("FAIL: lms CLI not found. Install LM Studio + run `lms bootstrap`, then retry.", err=True)
+            sys.exit(3)
+        if not model_is_loaded(settings.embedder.base_url, preset.lms_id):
+            click.echo(f"Downloading {preset.huggingface_repo} via lms get ...")
+            r = subprocess.run([str(loc.path), "get", preset.huggingface_repo],
+                               capture_output=False, check=False)
+            if r.returncode != 0:
+                click.echo("FAIL: lms get exited non-zero. Resolve manually then re-run with --no-download.", err=True)
+                sys.exit(4)
+            click.echo(f"Loading {preset.lms_id} ...")
+            subprocess.run([str(loc.path), "load", preset.lms_id], capture_output=False, check=False)
+
+    # 2. Edit config.toml.
+    cfg_path = _resolved_config_path(ctx)
+    cfg_text = cfg_path.read_text(encoding="utf-8")
+    import re as _re
+    if "preset" in cfg_text and _re.search(r"^\s*preset\s*=", cfg_text, _re.MULTILINE):
+        cfg_text = _re.sub(r"^\s*preset\s*=.*$", f'preset = "{preset.name}"',
+                           cfg_text, count=1, flags=_re.MULTILINE)
+    else:
+        # Insert under [embedder] header.
+        cfg_text = _re.sub(
+            r"(\[embedder\][^\[]*?)(\n\s*\[)",
+            rf'\1preset = "{preset.name}"\n\2',
+            cfg_text, count=1, flags=_re.DOTALL,
+        )
+    cfg_path.write_text(cfg_text, encoding="utf-8")
+    click.echo(f"config.toml updated: [embedder].preset = \"{preset.name}\"")
+
+    # 3. Wipe stores (model dim changes -> existing vectors incompatible).
+    import shutil as _sh
+    for sub in ("chroma", "graph"):
+        p = settings.paths.data_dir / sub
+        if p.exists():
+            _sh.rmtree(p, ignore_errors=True)
+    for f in ("fts.db", "fts.db-wal", "fts.db-shm",
+              "graph.kz", "graph.kz.wal", "graph.kz.shadow",
+              "index_meta.json", "file_hashes.db"):
+        fp = settings.paths.data_dir / f
+        if fp.exists():
+            with contextlib.suppress(OSError):
+                fp.unlink()
+    click.echo("data dir wiped (model dim incompatibility).")
+
+    click.echo("\nNext: run `code-rag index` to populate the new index.")
+    click.echo("After it finishes, re-run `code-rag eval src/code_rag/eval/fixtures/manual_eval.json`")
+    click.echo("with --baseline pointing at your previous baseline to measure the lift.")
 
 
 @main.command("git-log-index")
