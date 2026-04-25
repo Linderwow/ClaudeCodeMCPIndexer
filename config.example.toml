@@ -49,7 +49,14 @@ globs = [
     "**/*.egg-info/**",
 
     # --- .NET build outputs ---
-    "**/bin/**",
+    # Keep these SPECIFIC. `**/bin/**` (broader) is dangerous: it also matches
+    # paths like `NinjaTrader 8/bin/Custom/Strategies/` where `bin` is a
+    # legitimate code-hosting directory, not a build output.
+    "**/bin/Debug/**",
+    "**/bin/Release/**",
+    "**/bin/x64/**",
+    "**/bin/x86/**",
+    "**/bin/Any CPU/**",
     "**/obj/**",
     "**/TestResults/**",
     "**/packages/**",
