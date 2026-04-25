@@ -143,13 +143,32 @@ def _config_path() -> Path:
     return DEFAULT_CONFIG_PATH
 
 
+def _expand(p: Path) -> Path:
+    """Expand `~` and environment variables in a config-supplied path.
+
+    Allows the same `config.toml` to travel across machines / accounts:
+    `~/RiderProjects` resolves to whoever's home directory, and
+    `${USERPROFILE}/code` works on Windows. Unset env vars are left as-is.
+    """
+    s = os.path.expandvars(str(p))
+    s = os.path.expanduser(s)
+    return Path(s)
+
+
 def load_settings(path: Path | None = None) -> Settings:
     p = path or _config_path()
     with p.open("rb") as f:
         raw = tomllib.load(f)
     settings = Settings.model_validate(raw)
-    # Resolve relative paths against the config file's parent dir so `./data`
-    # in config.toml always means `<repo_root>/data` regardless of CWD.
+
+    # Step 1: expand `~` and `${VAR}` so config.toml is portable across
+    # machines (same file, different home dir).
+    settings.paths.data_dir = _expand(settings.paths.data_dir)
+    settings.paths.log_dir = _expand(settings.paths.log_dir)
+    settings.paths.roots = [_expand(r) for r in settings.paths.roots]
+
+    # Step 2: resolve relative paths against the config file's parent dir so
+    # `./data` in config.toml always means `<repo_root>/data` regardless of CWD.
     config_dir = p.resolve().parent
     if not settings.paths.data_dir.is_absolute():
         settings.paths.data_dir = (config_dir / settings.paths.data_dir).resolve()

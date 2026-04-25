@@ -70,10 +70,23 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
 
-# Copy the example config and point it at YOUR codebases:
+# Copy the example config — NO edits required if you'll rely on auto-discovery:
 copy config.example.toml config.toml
-#   → edit [paths].roots = ["C:/path/to/your/repo", ...]
 ```
+
+That's it for config — `[paths].roots = []` (the default) is valid. As soon as Claude Code asks about a repo, the `ensure_workspace_indexed` MCP tool fires and registers it. Pure pull-based.
+
+If you want **pre-pinned** codebases (so an initial bulk index runs at install time, before Claude touches them), edit `config.toml` and use `~`-relative paths so the same file works on every machine:
+
+```toml
+[paths]
+roots = [
+    "~/RiderProjects",
+    "~/Documents/NinjaTrader 8/bin/Custom/Strategies",
+]
+```
+
+`~` and `${VAR}` are expanded at load time, so the config file is portable across machines / accounts. You can also override the active config file via the `CODE_RAG_CONFIG` env var.
 
 Start LM Studio and load **text-embedding-qwen3-embedding-4b** (and optionally **qwen3-reranker-4b**) on the local server (default `http://localhost:1234`).
 

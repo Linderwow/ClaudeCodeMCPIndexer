@@ -1,19 +1,32 @@
 # code-rag-mcp example config — COMMITTED to git.
 #
-# First-time setup:
+# First-time setup on ANY machine:
 #   1. cp config.example.toml config.toml
-#   2. Edit [paths].roots to point at YOUR codebases
-#   3. Leave data_dir / log_dir relative — they live inside the repo tree and
+#   2. (optional) edit [paths].roots if you want pre-pinned codebases — the
+#      auto-discovery MCP tool (`ensure_workspace_indexed`) already covers
+#      any repo Claude Code opens, so leaving roots empty is a valid choice.
+#   3. data_dir / log_dir stay relative; they live inside the repo tree and
 #      are gitignored (data/ and logs/).
 #
-# The real config.toml is gitignored so per-machine paths never enter history.
-# Override the active config file via $CODE_RAG_CONFIG at runtime.
+# Cross-machine portability:
+#   - Use `~/path` or `${USERPROFILE}/path` in roots — these expand at load
+#     time so the SAME config.toml works on every machine you sync it to.
+#   - Override the active config file via `$CODE_RAG_CONFIG` at runtime.
+#   - The real `config.toml` is gitignored so absolute paths never enter
+#     git history; if you DO commit a portable config.toml elsewhere, prefer
+#     `~/...` over absolute paths.
 
 [paths]
-# Roots that get indexed. Absolute paths. Forward slashes are OK on Windows.
+# Roots that get indexed. Absolute paths or `~`-relative.
+# Leave empty to rely PURELY on auto-discovery — every repo Claude Code opens
+# gets registered via `ensure_workspace_indexed` and persisted in
+# data/dynamic_roots.json. Pre-pin here only when you want a specific
+# codebase indexed at install time without waiting for Claude to open it.
 roots = [
-    # "C:/path/to/your/codebase",
-    # "/home/you/projects/my-repo",
+    # Pinned examples (uncomment + edit). `~` expands per-machine.
+    # "~/RiderProjects",
+    # "~/Documents/NinjaTrader 8/bin/Custom/Strategies",
+    # "~/code/some-repo",
 ]
 # Data dir holds Chroma, Kuzu, SQLite-FTS, index metadata. Must be OUTSIDE every root.
 data_dir = "./data"

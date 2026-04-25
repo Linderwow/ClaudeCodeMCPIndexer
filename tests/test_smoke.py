@@ -82,6 +82,78 @@ model    = "qwen3-reranker-4b"
     assert s.paths.log_dir == (cfg_dir / "logs").resolve()
 
 
+def test_config_expands_tilde_in_roots(tmp_path: Path, monkeypatch) -> None:
+    """`~/foo` in config.toml must expand to the user's home dir at load time
+    so the same config.toml works on every machine."""
+    cfg_dir = tmp_path / "proj"
+    cfg_dir.mkdir()
+    # Use the real home dir as the base; create a fake "RiderProjects" sibling
+    # to act as a portable, machine-agnostic root.
+    home = Path.home()
+    fake_root = home / ".code_rag_test_tilde_root"
+    fake_root.mkdir(exist_ok=True)
+    try:
+        cfg = cfg_dir / "config.toml"
+        cfg.write_text(
+            """
+[paths]
+roots    = ["~/.code_rag_test_tilde_root"]
+data_dir = "./data"
+log_dir  = "./logs"
+
+[embedder]
+kind     = "lm_studio"
+base_url = "http://localhost:1234/v1"
+model    = "m"
+
+[reranker]
+kind     = "lm_studio"
+base_url = "http://localhost:1234/v1"
+model    = "m"
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("CODE_RAG_CONFIG", str(cfg))
+        s = load_settings()
+        assert s.paths.roots == [fake_root.resolve()]
+    finally:
+        if fake_root.exists():
+            fake_root.rmdir()
+
+
+def test_config_allows_empty_roots(tmp_path: Path, monkeypatch) -> None:
+    """An empty `[paths].roots = []` is valid — the user is opting in to
+    pure auto-discovery via `ensure_workspace_indexed`."""
+    cfg_dir = tmp_path / "proj"
+    cfg_dir.mkdir()
+    cfg = cfg_dir / "config.toml"
+    cfg.write_text(
+        """
+[paths]
+roots    = []
+data_dir = "./data"
+log_dir  = "./logs"
+
+[embedder]
+kind     = "lm_studio"
+base_url = "http://localhost:1234/v1"
+model    = "m"
+
+[reranker]
+kind     = "lm_studio"
+base_url = "http://localhost:1234/v1"
+model    = "m"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODE_RAG_CONFIG", str(cfg))
+    s = load_settings()
+    assert s.paths.roots == []
+    # `all_roots` must also handle empty config gracefully (returns empty
+    # absent any dynamic roots).
+    assert s.all_roots() == []
+
+
 def test_chunk_content_addressed_shape() -> None:
     c = Chunk(
         id="abc",
