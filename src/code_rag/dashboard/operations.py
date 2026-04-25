@@ -122,13 +122,18 @@ def _powershell_batch() -> dict[str, Any]:
 
     Returns {} on any failure; callers handle missing keys.
     """
+    # Match WATCHER processes specifically by command line, not by RAM size.
+    # The naive "any pythonw > 200 MB" filter swept up Claude Code's MCP
+    # subprocesses (each ~1.3 GB) and labeled them as watcher PIDs in the UI.
+    # Win32_Process gives us the CommandLine reliably.
     script = (
         f"$task = Get-ScheduledTask -TaskName '{WATCHER_TASK_NAME}' -EA SilentlyContinue;\n"
         f"$info = Get-ScheduledTaskInfo -TaskName '{WATCHER_TASK_NAME}' -EA SilentlyContinue;\n"
-        "$pids = @(Get-Process pythonw -EA SilentlyContinue |\n"
-        "  Where-Object { $_.WorkingSet64 -gt 200MB } |\n"
-        "  Sort-Object StartTime |\n"
-        "  Select-Object -First 4 -ExpandProperty Id);\n"
+        "$pids = @(Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe'\" -EA SilentlyContinue |\n"
+        "  Where-Object { $_.CommandLine -and ($_.CommandLine -like '*code_rag.autostart_bootstrap*' "
+        "                                  -or $_.CommandLine -like '*code_rag watch*') } |\n"
+        "  Sort-Object CreationDate |\n"
+        "  Select-Object -ExpandProperty ProcessId);\n"
         "$os = Get-CimInstance Win32_OperatingSystem;\n"
         "[PSCustomObject]@{\n"
         "  taskState          = if ($task) { $task.State.ToString() } else { 'NotRegistered' }\n"
@@ -447,12 +452,18 @@ def start_watcher_task() -> StepResult:
 # ---- stop operations --------------------------------------------------------
 
 
-def stop_all(settings: Settings, *, stop_lm_studio: bool = False) -> CompositeResult:
-    """Bring the stack down.
+def stop_all(settings: Settings, *, stop_lm_studio: bool = True) -> CompositeResult:
+    """Bring the stack down COMPLETELY.
 
-    Default keeps LM Studio server running because the user may have other
-    clients (Claude Code MCP subprocesses, manual lms calls). Pass
-    `stop_lm_studio=True` to also kill the server.
+    Stops watcher, unloads models, and stops the LM Studio server. The server
+    has to go too — if it stays up, ANY request from a Claude Code MCP
+    subprocess (or anything else pointing at /v1/embeddings) will JIT-reload
+    the embedder, defeating the user's intent. The watcher autostart task is
+    only stopped for THIS session — it'll fire again on next logon (the
+    user's hands-off-on-reboot requirement).
+
+    Pass `stop_lm_studio=False` to keep the server up (e.g. for the
+    granular-stop case where the dashboard's per-card buttons did the work).
     """
     _ = settings
     res = CompositeResult()

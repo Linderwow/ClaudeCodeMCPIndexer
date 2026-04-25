@@ -516,9 +516,9 @@ def dashboard(ctx: click.Context, host: str, port: int, no_browser: bool) -> Non
     if sys.stdout is None or sys.stderr is None:
         log_path = settings.paths.log_dir / "dashboard.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        # noqa: SIM115 -- we deliberately keep the file open for the lifetime
+
         # of the dashboard process so uvicorn's per-request log lines flush.
-        log_file = log_path.open("a", encoding="utf-8", buffering=1)  # noqa: SIM115
+        log_file = log_path.open("a", encoding="utf-8", buffering=1)
         sys.stdout = log_file
         sys.stderr = log_file
 

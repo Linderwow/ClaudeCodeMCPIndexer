@@ -294,11 +294,12 @@
       const action = btn.dataset.action;
       const target = btn.dataset.target;
       const path = `/api/${action}/${target}`;
-      // For stop_all, keep LM Studio server alive by default (other clients
-      // may be using it). User can stop the LMS server explicitly via the
-      // per-card button.
+      // Stop all = stop EVERYTHING including the LM Studio server. If the
+      // server stayed up, any background request (Claude Code MCP subprocess,
+      // a stray search) would JIT-reload the embedder and waste the click.
+      // The per-card "Stop server" button still exists for granular control.
       const body = (target === 'all' && action === 'stop')
-        ? { stop_lm_studio: false } : {};
+        ? { stop_lm_studio: true } : {};
       logLine(`${action}_${target} -> running…`, 'info');
       const r = await postJSON(path, body);
       logSteps(`${action}_${target}`, r);

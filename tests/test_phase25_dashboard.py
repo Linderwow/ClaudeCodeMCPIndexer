@@ -348,9 +348,11 @@ def test_start_all_aborts_when_lms_server_fails(
     assert called == [], "must short-circuit on first failure"
 
 
-def test_stop_all_keeps_lm_studio_by_default(
+def test_stop_all_default_kills_everything_including_lm_studio(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The default Stop-all behavior is the user-intuitive one: kill the
+    server too so models can't JIT-reload from background requests."""
     s = _make_settings(tmp_path, monkeypatch)
     seen: list[str] = []
     monkeypatch.setattr(ops, "stop_watcher_task",
@@ -361,12 +363,13 @@ def test_stop_all_keeps_lm_studio_by_default(
                         lambda: seen.append("stop_lms") or StepResult("c", True))
     res = ops.stop_all(s)
     assert res.ok
-    assert seen == ["stop_watcher", "unload_all"]
+    assert seen == ["stop_watcher", "unload_all", "stop_lms"]
 
 
-def test_stop_all_with_stop_lm_studio_kills_server_too(
+def test_stop_all_with_stop_lm_studio_false_keeps_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The granular case: caller explicitly opts out of stopping the server."""
     s = _make_settings(tmp_path, monkeypatch)
     seen: list[str] = []
     monkeypatch.setattr(ops, "stop_watcher_task",
@@ -375,6 +378,6 @@ def test_stop_all_with_stop_lm_studio_kills_server_too(
                         lambda: seen.append("b") or StepResult("b", True))
     monkeypatch.setattr(ops, "stop_lms_server",
                         lambda: seen.append("c") or StepResult("c", True))
-    res = ops.stop_all(s, stop_lm_studio=True)
+    res = ops.stop_all(s, stop_lm_studio=False)
     assert res.ok
-    assert seen == ["a", "b", "c"]
+    assert seen == ["a", "b"]  # server NOT touched
