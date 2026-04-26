@@ -124,6 +124,12 @@ def load_model(lms: Path, model: str, *, timeout_s: float = 300.0) -> subprocess
         [str(lms), "load", model],
         capture_output=True,
         text=True,
+        # Decode lms.exe output as UTF-8; cp1252 (Windows default) chokes on
+        # bytes lms emits for progress bars and unicode in model names. The
+        # `errors="replace"` keeps the reader thread from raising and silently
+        # spamming dashboard.log.
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout_s,
         creationflags=_CREATE_NO_WINDOW,
         check=False,

@@ -187,7 +187,7 @@ def _gpu_status_via_nvidia_smi() -> dict[str, Any] | None:
             ["nvidia-smi",
              "--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu",
              "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=4.0, check=False,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=4.0, check=False,
             creationflags=_CREATE_NO_WINDOW,
         )
     except (subprocess.TimeoutExpired, OSError, FileNotFoundError):
@@ -455,7 +455,7 @@ def load_model(model: str, timeout_s: float) -> StepResult:
     try:
         r = subprocess.run(
             [str(loc.path), "load", model],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=timeout_s, check=False,
             creationflags=_CREATE_NO_WINDOW,
         )
@@ -541,7 +541,7 @@ def unload_all_models() -> StepResult:
     try:
         r = subprocess.run(
             [str(loc.path), "unload", "--all"],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=_LMS_FAST_TIMEOUT, check=False,
             creationflags=_CREATE_NO_WINDOW,
         )
@@ -567,7 +567,7 @@ def unload_model(model: str) -> StepResult:
     try:
         r = subprocess.run(
             [str(loc.path), "unload", model],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=_LMS_FAST_TIMEOUT, check=False,
             creationflags=_CREATE_NO_WINDOW,
         )
@@ -592,7 +592,7 @@ def stop_lms_server() -> StepResult:
     try:
         r = subprocess.run(
             [str(loc.path), "server", "stop"],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=_LMS_FAST_TIMEOUT, check=False,
             creationflags=_CREATE_NO_WINDOW,
         )
@@ -624,7 +624,7 @@ def _ps_query(script: str) -> str:
     try:
         r = subprocess.run(
             ["powershell", "-NoProfile", "-Command", script],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=_TASK_OP_TIMEOUT, check=False,
             creationflags=_CREATE_NO_WINDOW,
         )
