@@ -213,44 +213,80 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-# Cache for /v1/models — when LM Studio's worker is busy serving inference,
-# /v1/models can take 2 s to respond, busting our 2 s poll cadence. The list
-# of downloaded models only changes when the user runs `lms get`, so a 5 s
-# TTL is plenty fresh and keeps polls snappy.
-_LMS_AVAIL_CACHE: tuple[float, bool, list[str]] = (0.0, False, [])
-_LMS_AVAIL_TTL_S = 5.0
+# LM Studio's `/api/v0/models` endpoint (their richer admin API, alongside
+# the OpenAI-compatible /v1/models) returns BOTH the available model list
+# AND each model's load state in ONE pure-HTTP call. By using it we avoid
+# `lms ps` entirely -- the subprocess fans out into 7+ lms-cli RPC calls per
+# invocation that flood LM Studio's logs at our 2s poll cadence.
+#
+# Schema we care about:
+#   {"data": [
+#     {"id": "...", "type": "embeddings"|"llm", "state": "loaded"|"not-loaded",
+#      "quantization": "Q4_K_M", "max_context_length": 4096, ...}
+#   ]}
+#
+# 3 s TTL is plenty fresh: model state only changes on load/unload events,
+# which are user-initiated (Start all / Stop all / per-model unload buttons)
+# and which we trigger ourselves -- so we know to invalidate the cache after.
+_LMS_API_CACHE: tuple[float, dict[str, Any]] = (0.0, {})
+_LMS_API_TTL_S = 3.0
 
 
-def _lms_probe(base_url: str) -> tuple[bool, list[str]]:
-    """Return (server_up, available_model_ids). 5s TTL cache."""
-    global _LMS_AVAIL_CACHE
+def _lms_fetch_state(base_url: str) -> dict[str, Any]:
+    """Hit /api/v0/models and return a parsed view, cached briefly. Falls back
+    to a server_up=False shape on any error so callers can render gracefully."""
+    global _LMS_API_CACHE
     now = time.monotonic()
-    ts, server_up, ids = _LMS_AVAIL_CACHE
-    if now - ts < _LMS_AVAIL_TTL_S and ts > 0:
-        return server_up, ids
-    server_up = False
-    ids = []
+    ts, cached = _LMS_API_CACHE
+    if now - ts < _LMS_API_TTL_S and ts > 0:
+        return cached
+
+    # /api/v0/models lives at the LM Studio HTTP server (same host:port as
+    # /v1/...) but on the admin path. Strip "/v1" if base_url has it.
+    api_base = base_url
+    if api_base.endswith("/v1"):
+        api_base = api_base[: -len("/v1")]
+    elif api_base.endswith("/v1/"):
+        api_base = api_base[: -len("/v1/")]
+    api_base = api_base.rstrip("/")
+
+    parsed: dict[str, Any] = {"server_up": False, "available": [], "loaded": []}
     try:
-        r = httpx.get(f"{base_url}/models", timeout=2.0)
+        r = httpx.get(f"{api_base}/api/v0/models", timeout=2.0)
         if r.status_code == 200:
-            server_up = True
+            parsed["server_up"] = True
             data = r.json().get("data", []) or []
-            ids = [str(m.get("id", "")) for m in data if m.get("id")]
+            for m in data:
+                mid = str(m.get("id", ""))
+                if not mid:
+                    continue
+                parsed["available"].append(mid)
+                if str(m.get("state", "")).lower() == "loaded":
+                    parsed["loaded"].append({
+                        "id":      mid,
+                        "status":  "IDLE",  # /api/v0 doesn't expose IDLE/COMPUTING
+                        "size_mb": 0.0,     # not returned by /api/v0
+                        "context": str(m.get("loaded_context_length",
+                                             m.get("max_context_length", ""))),
+                        "ttl":     None,    # not exposed by /api/v0
+                        "device":  m.get("type", ""),  # repurpose as type label
+                        "quantization": m.get("quantization", ""),
+                    })
     except (httpx.HTTPError, OSError):
         pass
-    _LMS_AVAIL_CACHE = (now, server_up, ids)
-    return server_up, ids
+
+    _LMS_API_CACHE = (now, parsed)
+    return parsed
 
 
 def _lms_status(settings: Settings) -> dict[str, Any]:
     base_url = settings.embedder.base_url.rstrip("/")
-    server_up, available_ids = _lms_probe(base_url)
-    loaded = _lms_ps()
+    state = _lms_fetch_state(base_url)
     return {
-        "server_up": server_up,
+        "server_up": state["server_up"],
         "base_url":  base_url,
-        "models_loaded":    loaded,
-        "models_available": available_ids,
+        "models_loaded":    state["loaded"],
+        "models_available": state["available"],
         "configured": {
             "embedder": settings.embedder.model,
             "reranker": settings.reranker.model if settings.reranker.model else None,
@@ -259,45 +295,21 @@ def _lms_status(settings: Settings) -> dict[str, Any]:
     }
 
 
-# `lms ps` is expensive: each invocation fans out into ~5 sub-RPC calls
-# against LM Studio's backend (listLoaded + getLoadConfig + getModelInfo +
-# getInstanceProcessingState, twice each for two loaded models). Without a
-# cache, dashboard polling at 2s cadence floods LM Studio's logs with ~7
-# connections per second. Loaded-model state changes rarely (only on
-# load/unload events), so a short TTL is plenty fresh.
-_LMS_PS_CACHE: tuple[float, list[dict[str, Any]]] = (0.0, [])
-_LMS_PS_TTL_S = 4.0
+def invalidate_lms_cache() -> None:
+    """Drop the cached /api/v0/models snapshot so the next status poll
+    refreshes immediately. Call this after operations that change load state
+    (load_model / unload_model / unload_all_models / start_lms_server /
+    stop_lms_server) so the UI reflects the new state on the very next
+    poll instead of waiting up to TTL."""
+    global _LMS_API_CACHE
+    _LMS_API_CACHE = (0.0, {})
 
 
-def _lms_ps() -> list[dict[str, Any]]:
-    """Parse `lms ps` text output. Fixed-width columns; resilient to extra
-    whitespace. Returns one dict per loaded model. Cached for 4s."""
-    global _LMS_PS_CACHE
-    now = time.monotonic()
-    ts, cached = _LMS_PS_CACHE
-    if now - ts < _LMS_PS_TTL_S and ts > 0:
-        return cached
-
-    loc = find_lms()
-    if loc.path is None:
-        _LMS_PS_CACHE = (now, [])
-        return []
-    try:
-        r = subprocess.run(
-            [str(loc.path), "ps"],
-            capture_output=True, text=True,
-            timeout=_LMS_FAST_TIMEOUT, check=False,
-            creationflags=_CREATE_NO_WINDOW,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        _LMS_PS_CACHE = (now, [])
-        return []
-    if r.returncode != 0:
-        _LMS_PS_CACHE = (now, [])
-        return []
-    parsed = _parse_lms_ps(r.stdout)
-    _LMS_PS_CACHE = (now, parsed)
-    return parsed
+# Note: We deliberately do NOT call `lms ps` from get_status anymore. Each
+# invocation fans into ~7 lms-cli RPC sub-calls that flood LM Studio's logs.
+# `_parse_lms_ps` and `_parse_size_mb` are kept for tests + ops that touch
+# the CLI directly (load/unload), but the dashboard's polling path now uses
+# the lighter /api/v0/models HTTP endpoint via `_lms_fetch_state`.
 
 
 def _parse_lms_ps(text: str) -> list[dict[str, Any]]:
@@ -425,6 +437,7 @@ def start_lms_server(settings: Settings) -> StepResult:
     deadline = time.monotonic() + _LMS_START_TIMEOUT
     while time.monotonic() < deadline:
         if _server_reachable(base_url):
+            invalidate_lms_cache()
             return StepResult("start_lms_server", True, "ready",
                               (time.monotonic() - t0) * 1000)
         time.sleep(0.5)
@@ -451,6 +464,7 @@ def load_model(model: str, timeout_s: float) -> StepResult:
                           f"timed out after {timeout_s:.0f}s",
                           (time.monotonic() - t0) * 1000)
     if r.returncode == 0:
+        invalidate_lms_cache()
         return StepResult(f"load_model({model})", True, "loaded",
                           (time.monotonic() - t0) * 1000)
     return StepResult(f"load_model({model})", False,
@@ -535,6 +549,7 @@ def unload_all_models() -> StepResult:
         return StepResult("unload_all_models", False, "timed out",
                           (time.monotonic() - t0) * 1000)
     if r.returncode == 0:
+        invalidate_lms_cache()
         return StepResult("unload_all_models", True,
                           (r.stdout or "").strip()[:240] or "all models unloaded",
                           (time.monotonic() - t0) * 1000)
@@ -559,6 +574,8 @@ def unload_model(model: str) -> StepResult:
     except subprocess.TimeoutExpired:
         return StepResult(f"unload_model({model})", False, "timed out",
                           (time.monotonic() - t0) * 1000)
+    if r.returncode == 0:
+        invalidate_lms_cache()
     return StepResult(
         f"unload_model({model})", r.returncode == 0,
         ((r.stdout if r.returncode == 0 else r.stderr) or "").strip()[:240],
@@ -582,6 +599,8 @@ def stop_lms_server() -> StepResult:
     except subprocess.TimeoutExpired:
         return StepResult("stop_lms_server", False, "timed out",
                           (time.monotonic() - t0) * 1000)
+    if r.returncode == 0:
+        invalidate_lms_cache()
     return StepResult(
         "stop_lms_server", r.returncode == 0,
         ((r.stdout if r.returncode == 0 else r.stderr) or "").strip()[:240],
