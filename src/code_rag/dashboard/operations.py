@@ -259,11 +259,28 @@ def _lms_status(settings: Settings) -> dict[str, Any]:
     }
 
 
+# `lms ps` is expensive: each invocation fans out into ~5 sub-RPC calls
+# against LM Studio's backend (listLoaded + getLoadConfig + getModelInfo +
+# getInstanceProcessingState, twice each for two loaded models). Without a
+# cache, dashboard polling at 2s cadence floods LM Studio's logs with ~7
+# connections per second. Loaded-model state changes rarely (only on
+# load/unload events), so a short TTL is plenty fresh.
+_LMS_PS_CACHE: tuple[float, list[dict[str, Any]]] = (0.0, [])
+_LMS_PS_TTL_S = 4.0
+
+
 def _lms_ps() -> list[dict[str, Any]]:
     """Parse `lms ps` text output. Fixed-width columns; resilient to extra
-    whitespace. Returns one dict per loaded model."""
+    whitespace. Returns one dict per loaded model. Cached for 4s."""
+    global _LMS_PS_CACHE
+    now = time.monotonic()
+    ts, cached = _LMS_PS_CACHE
+    if now - ts < _LMS_PS_TTL_S and ts > 0:
+        return cached
+
     loc = find_lms()
     if loc.path is None:
+        _LMS_PS_CACHE = (now, [])
         return []
     try:
         r = subprocess.run(
@@ -273,10 +290,14 @@ def _lms_ps() -> list[dict[str, Any]]:
             creationflags=_CREATE_NO_WINDOW,
         )
     except (subprocess.TimeoutExpired, OSError):
+        _LMS_PS_CACHE = (now, [])
         return []
     if r.returncode != 0:
+        _LMS_PS_CACHE = (now, [])
         return []
-    return _parse_lms_ps(r.stdout)
+    parsed = _parse_lms_ps(r.stdout)
+    _LMS_PS_CACHE = (now, parsed)
+    return parsed
 
 
 def _parse_lms_ps(text: str) -> list[dict[str, Any]]:
