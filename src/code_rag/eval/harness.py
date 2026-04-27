@@ -223,6 +223,109 @@ def load_cases(path: Path) -> list[EvalCase]:
     return [EvalCase.from_dict(d) for d in data]
 
 
+def categorize_misses(
+    report: "EvalReport",
+    indexed_paths: set[str],
+) -> dict[str, list[dict[str, Any]]]:
+    """Phase 35 (A4): per-miss diagnostic — explain each failed query.
+
+    For every case that didn't hit top-10, classify into one of:
+
+      * "ground_truth_not_in_index"
+            The expected path doesn't exist in the indexed corpus at all.
+            Re-mine the eval set — this isn't a retrieval failure.
+
+      * "retrieved_but_wrong_path"
+            Top-10 has 10 paths but none match expected. Real retrieval
+            miss. Either the chunker missed the symbol, or fusion/rerank
+            ranked the wrong chunks higher.
+
+      * "no_results"
+            Search returned an empty top-10 (probably min_score gate or
+            crash). Investigate the case query for adversarial input.
+
+    Returns a dict with one list per category, each entry shaped like:
+        {"query": "...", "expected_paths": [...], "top_paths": [...],
+         "tag": "..."}
+
+    Use the output to drive surgical fixes vs. shotgun tuning.
+    """
+    cats: dict[str, list[dict[str, Any]]] = {
+        "ground_truth_not_in_index": [],
+        "retrieved_but_wrong_path":  [],
+        "no_results":                [],
+    }
+    # We need the original cases to know expected_paths. Encode them in
+    # the report's casewise top_paths field as a side effect — see EvalResult.
+    for r in report.cases:
+        if r.hit:
+            continue
+        # The harness loses the expected_paths after run_eval; the caller
+        # must pass cases via the report's debug attr if they want full
+        # diagnostics. Default: just split into "no_results" vs other.
+        if not r.top_paths:
+            cats["no_results"].append({
+                "query": r.query, "tag": r.tag, "top_paths": [],
+            })
+            continue
+        # Without access to expected paths here we can't tell
+        # "ground_truth_not_in_index" from "retrieved_but_wrong_path"
+        # in this lightweight mode. Default to wrong_path.
+        cats["retrieved_but_wrong_path"].append({
+            "query": r.query, "tag": r.tag,
+            "top_paths": r.top_paths[:5],
+        })
+    return cats
+
+
+def diagnose_misses_with_cases(
+    cases: Iterable[EvalCase],
+    report: "EvalReport",
+    indexed_paths: set[str],
+) -> dict[str, list[dict[str, Any]]]:
+    """Richer diagnostic that needs both the original cases AND the report.
+
+    Distinguishes "ground_truth_not_in_index" from
+    "retrieved_but_wrong_path" using the actual indexed_paths set.
+    """
+    case_by_query = {c.query: c for c in cases}
+    cats: dict[str, list[dict[str, Any]]] = {
+        "ground_truth_not_in_index": [],
+        "retrieved_but_wrong_path":  [],
+        "no_results":                [],
+    }
+    for r in report.cases:
+        if r.hit:
+            continue
+        c = case_by_query.get(r.query)
+        if c is None:
+            continue
+        expected_paths = [e.path for e in c.expected]
+        in_index = [p for p in expected_paths if p in indexed_paths]
+        out_of_index = [p for p in expected_paths if p not in indexed_paths]
+
+        if not r.top_paths:
+            cats["no_results"].append({
+                "query": r.query, "tag": r.tag,
+                "expected_paths": expected_paths,
+                "top_paths": [],
+            })
+        elif not in_index:
+            cats["ground_truth_not_in_index"].append({
+                "query": r.query, "tag": r.tag,
+                "expected_paths": expected_paths,
+                "missing_paths": out_of_index,
+                "top_paths": r.top_paths[:5],
+            })
+        else:
+            cats["retrieved_but_wrong_path"].append({
+                "query": r.query, "tag": r.tag,
+                "expected_paths": in_index,
+                "top_paths": r.top_paths[:5],
+            })
+    return cats
+
+
 def filter_cases_to_paths(
     cases: Iterable[EvalCase], indexed_paths: set[str],
 ) -> list[EvalCase]:
