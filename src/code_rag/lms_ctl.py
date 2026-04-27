@@ -113,15 +113,34 @@ def start_server(lms: Path) -> subprocess.Popen[bytes]:
     )
 
 
-def load_model(lms: Path, model: str, *, timeout_s: float = 300.0) -> subprocess.CompletedProcess[str]:
+def load_model(
+    lms: Path,
+    model: str,
+    *,
+    timeout_s: float = 300.0,
+    parallel: int | None = None,
+    context_length: int | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Invoke `lms load <model>` synchronously.
 
     Idempotent: if the model is already loaded, `lms load` exits ~instantly
     with a benign message. Large models can take minutes on first load, so
     the default timeout is generous.
+
+    Phase 33: optional `parallel` + `context_length` shrink LM Studio's
+    KV cache reservation. Default LM Studio settings (Parallel=4 +
+    max_context=40K for an embedder) burn ~17 GB of VRAM on a 4B model
+    just for KV cache pre-allocation. We never feed embedder inputs >4K
+    tokens, so passing `parallel=2 context_length=4096` frees ~12 GB
+    that we can spend on a HyDE / reranker model.
     """
+    cmd = [str(lms), "load", model, "-y"]
+    if parallel is not None:
+        cmd.extend(["--parallel", str(parallel)])
+    if context_length is not None:
+        cmd.extend(["--context-length", str(context_length)])
     return subprocess.run(
-        [str(lms), "load", model],
+        cmd,
         capture_output=True,
         text=True,
         # Decode lms.exe output as UTF-8; cp1252 (Windows default) chokes on
@@ -146,6 +165,35 @@ class BootstrapResult:
     error: str | None = None
 
 
+# Phase 33: per-model VRAM-saving load settings.
+#
+# LM Studio's defaults (Parallel=4, Context=max-supported) reserve enormous
+# KV cache up front — a Qwen3-Embedding-4B at default settings burns ~17 GB
+# of VRAM JUST for KV pre-allocation we never use (embedder inputs are
+# almost always <2K tokens). Per-model overrides keep the GPU free for
+# additional models (HyDE, reranker, etc).
+#
+# Heuristics (token-budget approach):
+#   Embedder       : context 4096, parallel 2  — code chunks rarely exceed 2K tokens.
+#                                                 Saves ~12 GB vs default.
+#   Chat reranker  : context 8192, parallel 2  — listwise prompts are ~6K chars ≈ 1.5K tokens.
+#   HyDE generator : context 8192, parallel 1  — hypothetical-doc generation is single-stream.
+#
+# Models not in this map fall through to LM Studio defaults (which are
+# correct for unknown sizes; this map is purely an optimization).
+_LMS_LOAD_SETTINGS: dict[str, tuple[int, int]] = {  # model_id -> (parallel, context)
+    "text-embedding-qwen3-embedding-4b": (2, 4096),
+    "qwen/qwen3-1.7b":                   (2, 8192),
+    "qwen2.5-coder-7b-instruct":         (1, 8192),
+    "qwen3-reranker-4b":                 (2, 8192),
+}
+
+
+def _settings_for(model: str) -> tuple[int | None, int | None]:
+    """Return (parallel, context_length) for known models, else (None, None)."""
+    return _LMS_LOAD_SETTINGS.get(model, (None, None))
+
+
 def ensure_lm_studio_ready(
     base_url: str,
     embedder_model: str,
@@ -161,6 +209,9 @@ def ensure_lm_studio_ready(
       3. If the server isn't reachable, `lms server start` and wait.
       4. `lms load <embedder_model>` and wait for /v1/models to reflect it.
       5. Best-effort load of any extra models; missing ones don't fail the bootstrap.
+
+    Phase 33: each `lms load` passes per-model `--parallel` + `--context-length`
+    to keep KV-cache pre-allocation small. See `_LMS_LOAD_SETTINGS` above.
     """
     steps: list[str] = []
 
@@ -198,13 +249,17 @@ def ensure_lm_studio_ready(
     else:
         steps.append("server already running")
 
-    r = load_model(loc.path, embedder_model)
+    par, ctx = _settings_for(embedder_model)
+    r = load_model(loc.path, embedder_model, parallel=par, context_length=ctx)
     if r.returncode != 0:
         # Not automatically fatal — maybe the model IS loaded and lms just reported
         # a benign conflict. Let the readiness probe decide.
         log.warning("lms.load.nonzero", model=embedder_model,
                     rc=r.returncode, stderr=r.stderr[:200])
-    steps.append(f"issued lms load {embedder_model}")
+    steps.append(
+        f"issued lms load {embedder_model}"
+        + (f" (parallel={par}, ctx={ctx})" if par else "")
+    )
 
     if not wait_until_ready(base_url, embedder_model, timeout_s=ready_timeout_s):
         return BootstrapResult(
@@ -220,8 +275,10 @@ def ensure_lm_studio_ready(
         # Extras are best-effort. Tight timeout + swallow TimeoutExpired so a
         # missing/slow reranker never kills the whole bootstrap (the watcher
         # gracefully falls back to no-op rerank at query time).
+        par_x, ctx_x = _settings_for(m)
         try:
-            r = load_model(loc.path, m, timeout_s=60.0)
+            r = load_model(loc.path, m, timeout_s=60.0,
+                           parallel=par_x, context_length=ctx_x)
         except subprocess.TimeoutExpired:
             steps.append(f"{m} load timed out (skipped, non-fatal)")
             continue
@@ -229,7 +286,10 @@ def ensure_lm_studio_ready(
             steps.append(f"{m} load errored: {type(e).__name__} (skipped)")
             continue
         if r.returncode == 0 and wait_until_ready(base_url, m, timeout_s=30.0):
-            steps.append(f"{m} ready")
+            steps.append(
+                f"{m} ready"
+                + (f" (parallel={par_x}, ctx={ctx_x})" if par_x else "")
+            )
         else:
             steps.append(f"{m} load skipped (non-fatal)")
 

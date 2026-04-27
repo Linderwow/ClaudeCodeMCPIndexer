@@ -91,6 +91,13 @@ model     = "text-embedding-qwen3-embedding-4b"
 dim       = 0
 timeout_s = 60
 batch     = 32
+# Phase 19: chat model for HyDE hypothetical-document expansion. Comment out
+# to disable. The Phase 19 intent classifier gates HyDE so it ONLY fires on
+# natural-language / mixed queries — bare identifier lookups never spend an
+# LLM call. With a 1.7B model HyDE regressed quality (-0.5pp R@3 because the
+# small model wrote weak hypotheticals); a 7B coder writes realistic enough
+# hypothetical code to be neutral-to-positive. Recommended:
+hyde_model = "qwen2.5-coder-7b-instruct"
 
 [reranker]
 # Four reranker backends are supported:

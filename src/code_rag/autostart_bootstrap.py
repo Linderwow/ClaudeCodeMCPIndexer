@@ -88,6 +88,9 @@ async def _run() -> int:
     # 2) Ensure LM Studio is up with the embedder loaded.
     # Pre-load any auxiliary chat/rerank models so the first MCP query after
     # boot doesn't pay a 5-10s JIT-load penalty.
+    #
+    # Phase 29: cross_encoder reranker doesn't go through LM Studio at all
+    # (it's loaded by sentence-transformers in-process). Skip those.
     extra: tuple[str, ...] = ()
     rer = settings.reranker
     if rer.kind in ("lm_studio", "lm_chat") and rer.model:
