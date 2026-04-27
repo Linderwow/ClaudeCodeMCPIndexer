@@ -29,3 +29,12 @@ class Embedder(ABC):
     @abstractmethod
     async def health(self) -> None:
         """Raise if backend is unreachable or model unavailable. Cheap; called on startup."""
+
+    async def aclose(self) -> None:
+        """Release any backend resources (HTTP clients, GPU model handles, etc.).
+
+        Default: no-op. Concrete backends may override. Callers can invoke
+        unconditionally; the default makes adding new backends safe without
+        having to update every cleanup site.
+        """
+        return None

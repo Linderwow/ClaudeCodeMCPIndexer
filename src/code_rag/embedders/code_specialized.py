@@ -53,13 +53,13 @@ CODE_EMBEDDER_PRESETS: dict[str, CodeEmbedderPreset] = {
     "bge-code-v1": CodeEmbedderPreset(
         name="bge-code-v1",
         lms_id="bge-code-v1",
-        expected_dim=1024,
+        expected_dim=1536,                  # corrected: HF reports 1536, not 1024
         huggingface_repo="BAAI/bge-code-v1",
         notes=(
             "BAAI's code-specialized embedder. Top-3 MTEB Code among free "
-            "models as of late 2025. Smaller (1.3 GB) than the Qwen baseline "
+            "models as of late 2025. Smaller (~1.3 GB) than the Qwen baseline "
             "and ~2-4 pp better Recall@10 on code-search benchmarks. "
-            "Run `lms get BAAI/bge-code-v1` to download."
+            "GGUF-free — load with `kind=\"sentence_transformers\"`."
         ),
     ),
     "codesage-large-v2": CodeEmbedderPreset(

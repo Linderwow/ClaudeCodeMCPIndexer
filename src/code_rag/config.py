@@ -25,8 +25,17 @@ class IgnoreConfig(BaseModel):
 
 
 class EmbedderConfig(BaseModel):
-    kind: Literal["lm_studio"] = "lm_studio"
-    base_url: str
+    # "lm_studio"             : OpenAI-compatible /v1/embeddings on LM Studio.
+    #                            GGUF-only — most code-specialized embedders
+    #                            (bge-code-v1, codesage, nomic-embed-code) are
+    #                            not released as GGUF and can't use this.
+    # "sentence_transformers" : Phase 34. Direct sentence-transformers backend,
+    #                            same dep as the cross-encoder reranker.
+    #                            Bypasses LM Studio. Required for HF SafeTensors-
+    #                            only code embedders. GPU when CUDA torch is
+    #                            installed. Best Recall@10 on code-search.
+    kind: Literal["lm_studio", "sentence_transformers"] = "lm_studio"
+    base_url: str = ""
     model: str
     dim: int = 0
     timeout_s: float = 60.0
@@ -39,6 +48,17 @@ class EmbedderConfig(BaseModel):
     # Phase 19: optional small chat-completion model for HyDE generation.
     # If not set or not loaded, HyDE silently falls back to literal-only.
     hyde_model: str | None = None
+    # Phase 34: only used when kind="sentence_transformers". Leave None to
+    # let sentence-transformers auto-pick (cuda > mps > cpu).
+    device: str | None = None
+    # Phase 34: some HF code embedders (e.g. nomic-embed-code) ship custom
+    # tokenizer / model code that requires `trust_remote_code=True`. Off by
+    # default for safety — only flip to True for embedders you've vetted.
+    trust_remote_code: bool = False
+    # Phase 34: cosine similarity benefits from L2-normalized vectors; most
+    # ST code embedders are trained with that assumption. Leave on unless
+    # you've specifically chosen a model that wants raw vectors.
+    normalize: bool = True
 
 
 class RerankerConfig(BaseModel):

@@ -211,8 +211,7 @@ def index(ctx: click.Context, path_: Path | None) -> None:
             lex.close()
             graph.close()
             hashes.close()
-            if isinstance(embedder, LMStudioEmbedder):
-                await embedder.aclose()
+            await embedder.aclose()
 
     sys.exit(asyncio.run(_run()))
 
@@ -277,8 +276,7 @@ def search(ctx: click.Context, query: tuple[str, ...], top_k: int,
         finally:
             vec.close()
             lex.close()
-            if isinstance(embedder, LMStudioEmbedder):
-                await embedder.aclose()
+            await embedder.aclose()
             if isinstance(reranker, LMStudioReranker):
                 await reranker.aclose()
 
@@ -628,8 +626,7 @@ def watch(ctx: click.Context) -> None:
         finally:
             vec.close()
             lex.close()
-            if isinstance(embedder, LMStudioEmbedder):
-                await embedder.aclose()
+            await embedder.aclose()
 
     try:
         sys.exit(asyncio.run(_run()))
@@ -814,8 +811,7 @@ def eval(
         finally:
             vec.close()
             lex.close()
-            if isinstance(embedder, LMStudioEmbedder):
-                await embedder.aclose()
+            await embedder.aclose()
             if isinstance(reranker, LMStudioReranker):
                 await reranker.aclose()
 
@@ -986,8 +982,7 @@ def eval_gate(
         finally:
             vec.close()
             lex.close()
-            if isinstance(embedder, LMStudioEmbedder):
-                await embedder.aclose()
+            await embedder.aclose()
             if isinstance(reranker, LMStudioReranker):
                 await reranker.aclose()
             # Phase 30: tear down rewriter cache + http client.
@@ -1233,8 +1228,7 @@ def git_log_index(ctx: click.Context, root: Path | None, max_commits: int, max_c
         finally:
             vec.close()
             lex.close()
-            if isinstance(embedder, LMStudioEmbedder):
-                await embedder.aclose()
+            await embedder.aclose()
 
     sys.exit(asyncio.run(_run()))
 
@@ -1426,8 +1420,7 @@ def bench(ctx: click.Context, n: int, queries: Path | None) -> None:
         finally:
             vec.close()
             lex.close()
-            if isinstance(embedder, LMStudioEmbedder):
-                await embedder.aclose()
+            await embedder.aclose()
             if isinstance(reranker, LMStudioReranker):
                 await reranker.aclose()
 

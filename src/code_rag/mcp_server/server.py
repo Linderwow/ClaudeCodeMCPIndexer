@@ -335,7 +335,7 @@ class ServerResources:
             self.lex.close()
         if self.graph is not None:
             self.graph.close()
-        if isinstance(self.embedder, LMStudioEmbedder):
+        if self.embedder is not None:
             await self.embedder.aclose()
         if isinstance(self.reranker, LMStudioReranker):
             await self.reranker.aclose()

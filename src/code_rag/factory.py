@@ -47,6 +47,20 @@ def build_embedder(settings: Settings) -> Embedder:
             timeout_s=e.timeout_s,
             batch=e.batch,
         )
+    if e.kind == "sentence_transformers":
+        # Phase 34: lazy import so the factory works even when the optional
+        # cross-encoder dep isn't installed. Construction itself raises a
+        # clear ImportError if sentence-transformers is missing.
+        from code_rag.embedders.sentence_transformers import (
+            SentenceTransformersEmbedder,
+        )
+        return SentenceTransformersEmbedder(
+            model=e.model,
+            device=e.device,
+            batch_size=e.batch,
+            normalize=e.normalize,
+            trust_remote_code=e.trust_remote_code,
+        )
     raise ValueError(f"Unknown embedder kind: {e.kind}")
 
 
