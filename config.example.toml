@@ -73,10 +73,21 @@ globs = [
     "**/playwright-report/**",
     "**/test-results/**",
 
+    # --- E2E test build artifacts (Phase 35: caught wedging the indexer) ---
+    # bin/build_check/.playwright bundles minified JS into thousands of
+    # tiny chunks. The chunker can't break minified code into anything
+    # meaningful and ends up indexing each bundle as ~500-2000 chunks of
+    # gibberish, wedging the indexer for hours while consuming GPU.
+    "**/bin/build_check/**",
+    "**/.playwright/**",
+    "**/build_check/**",          # generic case (some setups put this elsewhere)
+
     # --- Minified / sourcemap / lockfiles ---
     "**/*.min.js",
     "**/*.min.css",
     "**/*.map",
+    "**/*.bundle.js",             # webpack-style bundles (also chunker-hostile)
+    "**/*.chunk.js",              # code-split chunks (same)
     "**/package-lock.json",
     "**/yarn.lock",
     "**/pnpm-lock.yaml",
