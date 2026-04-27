@@ -41,8 +41,19 @@ dev = [
 # Phase 29: cross-encoder reranker. Heavyweight — only install if you want
 # to switch reranker.kind to "cross_encoder" in config.toml. Adds ~2 GB of
 # wheels (torch + transformers + sentence-transformers).
+#
+# Pins:
+#   * transformers <5         — v5.x bumped its httpx dep on huggingface_hub
+#                              v1.x, which has a known "Cannot send a request,
+#                              client has been closed" lifecycle bug that
+#                              breaks model downloads. Pin to v4.x line.
+#   * huggingface_hub <1      — same reason; sticks with the stable
+#                              requests-based downloader.
+#   * sentence-transformers <5 — depends on the transformers v4 line.
 cross-encoder = [
-    "sentence-transformers>=3.0",
+    "sentence-transformers>=3.0,<5",
+    "transformers>=4.40,<5",
+    "huggingface_hub>=0.20,<1.0",
 ]
 
 [project.scripts]

@@ -93,29 +93,39 @@ timeout_s = 60
 batch     = 32
 
 [reranker]
-# Three reranker backends are supported:
+# Four reranker backends are supported:
+#   "cross_encoder" — Phase 29 sentence-transformers CrossEncoder (e.g.
+#                     BAAI/bge-reranker-v2-m3). RECOMMENDED DEFAULT.
+#                     Faster, more deterministic, and significantly higher
+#                     quality than the chat-based listwise alternative.
+#                     Measured uplift on the manual eval fixture vs lm_chat:
+#                       Recall@1  62.5% → 67.5%  (+5.0pp)
+#                       Recall@3  77.5% → 85.0%  (+7.5pp)
+#                       MRR       0.722 → 0.753  (+3.1pp)
+#                       p50       1328ms → 343ms (4× faster on GPU)
+#                     Requires `pip install -e ".[cross-encoder]"`.
+#                     For GPU acceleration on Windows / CUDA:
+#                       pip install --force-reinstall --no-deps torch \
+#                         --index-url https://download.pytorch.org/whl/cu121
+#   "lm_chat"       — Phase 24 listwise reranker via /v1/chat/completions on
+#                     a small chat model. Fallback when sentence-transformers
+#                     can't be installed.
 #   "lm_studio"     — OpenAI-compatible /v1/rerank (Jina-style). LM Studio
 #                     itself doesn't implement this; for vLLM / TEI users.
-#   "lm_chat"       — Phase 24 listwise reranker via /v1/chat/completions on
-#                     a small chat model. The right choice for LM Studio.
-#                     RECOMMENDED DEFAULT.
-#   "cross_encoder" — Phase 29 sentence-transformers CrossEncoder (e.g.
-#                     BAAI/bge-reranker-v2-m3). Faster + more deterministic
-#                     than lm_chat. Requires `pip install -e ".[cross-encoder]"`.
 #   "noop"          — explicit no-op, useful for ablation eval and CI.
-kind      = "lm_chat"
-base_url  = "http://localhost:1234/v1"
-model     = "qwen/qwen3-1.7b"
+kind      = "cross_encoder"
+base_url  = "http://localhost:1234/v1"   # unused for cross_encoder; kept for interface
+model     = "BAAI/bge-reranker-v2-m3"
 top_k_in  = 50
 top_k_out = 8
 timeout_s = 60
-# Listwise tuning (only used when kind="lm_chat"): keep the prompt bounded
-# so latency stays predictable.
+# Cross-encoder tuning (only used when kind="cross_encoder").
+# device left blank → sentence-transformers auto-picks (CUDA → MPS → CPU).
+# device = "cuda"
+cross_encoder_max_chars = 600
+# Listwise tuning carryover (used only when kind="lm_chat").
 chat_max_candidates    = 20
 chat_max_chars_per_doc = 300
-# Cross-encoder tuning (only used when kind="cross_encoder").
-# device = "cuda"   # uncomment to force GPU; default = sentence-transformers auto
-cross_encoder_max_chars = 600
 
 [vector_store]
 kind       = "chroma"
