@@ -93,15 +93,29 @@ timeout_s = 60
 batch     = 32
 
 [reranker]
-kind      = "lm_studio"
+# Three reranker backends are supported:
+#   "lm_studio"     — OpenAI-compatible /v1/rerank (Jina-style). LM Studio
+#                     itself doesn't implement this; for vLLM / TEI users.
+#   "lm_chat"       — Phase 24 listwise reranker via /v1/chat/completions on
+#                     a small chat model. The right choice for LM Studio.
+#                     RECOMMENDED DEFAULT.
+#   "cross_encoder" — Phase 29 sentence-transformers CrossEncoder (e.g.
+#                     BAAI/bge-reranker-v2-m3). Faster + more deterministic
+#                     than lm_chat. Requires `pip install -e ".[cross-encoder]"`.
+#   "noop"          — explicit no-op, useful for ablation eval and CI.
+kind      = "lm_chat"
 base_url  = "http://localhost:1234/v1"
-# Reranker is OPTIONAL — leave the model blank or set to an unloaded model and
-# search falls back to no-op ordering. Download with e.g.
-#   lms get "https://huggingface.co/Qwen/Qwen3-Reranker-4B-GGUF"
-model     = "qwen3-reranker-4b"
+model     = "qwen/qwen3-1.7b"
 top_k_in  = 50
 top_k_out = 8
 timeout_s = 60
+# Listwise tuning (only used when kind="lm_chat"): keep the prompt bounded
+# so latency stays predictable.
+chat_max_candidates    = 20
+chat_max_chars_per_doc = 300
+# Cross-encoder tuning (only used when kind="cross_encoder").
+# device = "cuda"   # uncomment to force GPU; default = sentence-transformers auto
+cross_encoder_max_chars = 600
 
 [vector_store]
 kind       = "chroma"
@@ -125,6 +139,27 @@ overlap_chars = 0
 
 [watcher]
 debounce_ms = 500
+
+[query_rewriter]
+# Phase 30: query expansion at search time.
+#
+# When `enabled = true`:
+#   - Local (free) rewrites ALWAYS run: snake_case ↔ CamelCase ↔ spaced
+#     variants for any identifier-shaped tokens in the query. The first
+#     variant is added as a parallel search arm (capped to 2 arms total
+#     so we don't overload the embedder).
+#   - If `model` is set AND loaded in LM Studio, the rewriter ALSO calls
+#     the chat model for related-identifier suggestions. Cached on disk
+#     for 24 h so repeats are free.
+#
+# Local-only is the default. Set `model = "qwen/qwen3-1.7b"` to add LLM
+# expansions (adds ~1s per first-time query, free on cache hit).
+enabled  = true
+base_url = ""             # blank = use embedder.base_url
+model    = ""             # blank = local-only, no LLM call
+timeout_s = 8.0
+cache    = true
+db       = "rewrite_cache.db"
 
 [mcp]
 name = "code-rag"

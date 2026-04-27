@@ -306,6 +306,13 @@ class ServerResources:
             log.warning("mcp.hyde_disabled", err=str(e))
             hyde_plan = HydeRetrieverPlan(generator=None)
 
+        # Phase 30 query rewriter (built only if enabled in config). Free
+        # local rewrites by default; opt into LLM expansions by setting
+        # `[query_rewriter].model` in config.toml. Returns None when
+        # disabled, so the searcher silently falls back to literal-only.
+        from code_rag.factory import build_query_rewriter
+        self.rewriter = build_query_rewriter(s)
+
         # MCP server is purely a READER. Writes (reindex, ingest) happen via
         # the live watcher or the CLI. This avoids lock contention with the
         # watcher on Kuzu, which only permits a single writer.
@@ -313,11 +320,13 @@ class ServerResources:
             self.embedder, self.vec, self.lex, self.reranker,
             graph_store=self.graph,
             hyde_plan=hyde_plan,
+            rewriter=self.rewriter,
         )
         log.info("mcp.resources.open",
                  embedder=self.embedder.model, dim=self.embedder.dim,
                  chunks=self.vec.count(),
-                 hyde="on" if hyde_plan is not None else "off")
+                 hyde="on" if hyde_plan is not None else "off",
+                 rewriter="on" if self.rewriter is not None else "off")
 
     async def close(self) -> None:
         if self.vec is not None:
@@ -330,6 +339,14 @@ class ServerResources:
             await self.embedder.aclose()
         if isinstance(self.reranker, LMStudioReranker):
             await self.reranker.aclose()
+        # Phase 30: tear down rewriter (cache + httpx client).
+        rewriter = getattr(self, "rewriter", None)
+        if rewriter is not None:
+            from code_rag.retrieval.query_rewriter import LMStudioQueryRewriter
+            if isinstance(rewriter, LMStudioQueryRewriter):
+                await rewriter.aclose()
+                if rewriter._cache is not None:  # pyright: ignore[reportPrivateUsage]
+                    rewriter._cache.close()  # pyright: ignore[reportPrivateUsage]
 
 
 # ---- Handler dispatch -----------------------------------------------------

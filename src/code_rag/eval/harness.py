@@ -223,6 +223,27 @@ def load_cases(path: Path) -> list[EvalCase]:
     return [EvalCase.from_dict(d) for d in data]
 
 
+def filter_cases_to_paths(
+    cases: Iterable[EvalCase], indexed_paths: set[str],
+) -> list[EvalCase]:
+    """Phase 26: drop cases whose expected paths are all outside the index.
+
+    Mined cases reference files Claude opened from worktree clones, deleted
+    files, or roots not currently configured. Including them would artificially
+    depress recall metrics — the retriever cannot return a chunk that doesn't
+    exist. This filter keeps only the in-corpus subset, giving a true ceiling.
+
+    Cases with at least one in-index expected path are kept (with the missing
+    expected paths pruned). Cases with zero in-index paths are dropped.
+    """
+    out: list[EvalCase] = []
+    for c in cases:
+        keep = [e for e in c.expected if e.path in indexed_paths]
+        if keep:
+            out.append(EvalCase(query=c.query, expected=keep, tag=c.tag))
+    return out
+
+
 async def run_eval(
     cases: Iterable[EvalCase],
     searcher: HybridSearcher,

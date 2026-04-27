@@ -11,6 +11,7 @@ from code_rag.chunking.docs import DocChunker
 from code_rag.chunking.treesitter import TreeSitterChunker
 from code_rag.config import Settings
 from code_rag.indexing.file_hash import FileHashRegistry
+from code_rag.indexing.summary import synthesize_file_summary
 from code_rag.indexing.walker import CODE_EXT, DOC_EXT, Walker
 from code_rag.interfaces.embedder import Embedder
 from code_rag.interfaces.vector_store import VectorStore
@@ -289,6 +290,17 @@ class Indexer:
                         stats.errors.append(f"graph_delete:{rel}:{e}")
             stats.files_skipped += 1
             return rel
+
+        # Phase 31: synthesize one extra "table of contents" chunk per file
+        # — path / language / list of symbols. Gives the embedder a single
+        # high-level handle on the file for natural-language queries that
+        # don't share tokens with any specific symbol body. Skipped for
+        # docs (DocChunker already produces meaningful prose chunks). Also
+        # skipped if the file produced 0 chunks (handled above).
+        if not is_doc:
+            summary = synthesize_file_summary(repo, rel, language, chunks)
+            if summary is not None:
+                chunks = [*chunks, summary]
 
         stats.chunks_emitted += len(chunks)
 

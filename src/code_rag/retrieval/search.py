@@ -12,7 +12,12 @@ from code_rag.interfaces.reranker import Reranker
 from code_rag.interfaces.vector_store import VectorStore
 from code_rag.logging import get
 from code_rag.models import Chunk, SearchHit
-from code_rag.retrieval.fusion import reciprocal_rank_fusion
+from code_rag.retrieval.fusion import (
+    boost_exact_matches,
+    extract_identifiers,
+    mmr_diversify,
+    reciprocal_rank_fusion,
+)
 
 log = get(__name__)
 
@@ -48,6 +53,19 @@ class SearchParams:
     # get_callers/get_callees separately if they want it.
     attach_neighbors: bool = False
 
+    # ---- Phase 27 MMR diversity --------------------------------------------
+
+    # MMR lambda applied between fusion and rerank. 1.0 = pure relevance
+    # (current behavior, no diversity), 0.7 = balanced relevance/diversity
+    # (default — picks a fresh file over a 4th hit from the same one),
+    # 0.5 = diversity-heavy, 0.0 = max diversity. Disable by setting 1.0.
+    mmr_lambda: float = 0.7
+
+    # Phase 28: multiplicative boost applied to hits whose text contains
+    # identifier-shaped tokens from the query. score *= (1 + factor * matches).
+    # 0.0 = disabled; 0.5 = +50% per matched identifier (capped at 3 per hit).
+    exact_match_boost: float = 0.5
+
 
 @dataclass
 class SearchResponse:
@@ -77,6 +95,7 @@ class HybridSearcher:
         reranker: Reranker,
         graph_store: GraphStore | None = None,
         hyde_plan: object | None = None,  # HydeRetrieverPlan, optional
+        rewriter: object | None = None,   # LMStudioQueryRewriter, optional
     ) -> None:
         self._embed = embedder
         self._vec = vector_store
@@ -87,6 +106,11 @@ class HybridSearcher:
         # `plan.plan(query)` to (optionally) add a hypothetical-doc query
         # arm for natural-language questions. None = pure literal search.
         self._hyde = hyde_plan
+        # Phase 30 query rewriter. If set, the searcher expands identifier-
+        # shaped queries into casing variants (and, with an LLM, related
+        # identifiers). Composes with HyDE — both contribute arms. None =
+        # pure literal search.
+        self._rewriter = rewriter
 
     async def search(self, query: str, params: SearchParams) -> list[SearchHit]:
         """Back-compat entry point. Returns a bare list.
@@ -99,13 +123,32 @@ class HybridSearcher:
     async def search_full(self, query: str, params: SearchParams) -> SearchResponse:
         t0 = time.monotonic()
 
-        # Phase 19: HyDE plan. Identifier queries get a single-arm plan
-        # (no LLM call); NL/mixed queries get a 2-arm plan with a
-        # hypothetical-doc embedding fused alongside the literal one.
-        if self._hyde is not None:
-            plan = await self._hyde.plan(query)  # type: ignore[attr-defined]
-        else:
+        # Phase 30 + Phase 19 plan composition. Order:
+        #   1. Rewriter (if any) seeds the arm list with original + casing
+        #      variants + LLM-suggested expansions.
+        #   2. HyDE (if any) appends a hypothetical-doc arm on NL queries.
+        # If neither is configured we fall back to the single-arm literal
+        # search — identical to pre-Phase-30 behavior.
+        plan: list[tuple[str, float]] = []
+        if self._rewriter is not None:
+            try:
+                rw = await self._rewriter.rewrite(query)  # type: ignore[attr-defined]
+                plan = list(rw.arms)
+            except Exception as e:  # rewriter is best-effort
+                log.warning("search.rewrite_fail", err=f"{type(e).__name__}: {e}")
+        if not plan:
             plan = [(query, 1.0)]
+        if self._hyde is not None:
+            try:
+                hyde_arms = await self._hyde.plan(query)  # type: ignore[attr-defined]
+                # Drop the literal arm from HyDE (we already have it) and
+                # keep the hypothetical-doc arms.
+                literal_norm = query.strip()
+                for arm_text, arm_w in hyde_arms:
+                    if arm_text.strip() != literal_norm:
+                        plan.append((arm_text, arm_w))
+            except Exception as e:
+                log.warning("search.hyde_fail", err=f"{type(e).__name__}: {e}")
 
         # 1) Kick off vector queries (one per plan arm) + lexical (single,
         #    using the LITERAL query — BM25 over a hypothetical chunk would
@@ -142,6 +185,29 @@ class HybridSearcher:
             k=params.rrf_k,
             top_k=max(params.k_rerank_in, params.k_final),
         )
+
+        # 3a) Phase 28: exact-identifier boost BEFORE diversity. If the query
+        # contains identifier-shaped tokens (`OnBarUpdate`, `ensure_lm_studio_ready`),
+        # chunks containing those tokens get a multiplicative score lift.
+        # Runs ahead of MMR so the boosted hit is the one MMR considers
+        # canonical for its file.
+        if params.exact_match_boost > 0.0:
+            idents = extract_identifiers(query)
+            if idents:
+                fused = boost_exact_matches(
+                    fused, idents, factor=params.exact_match_boost,
+                )
+
+        # 3b) Phase 27: MMR diversity. Penalizes near-duplicates (same path,
+        # same symbol) so the reranker sees a more diverse candidate slate.
+        # Skipped when lambda >= 1.0 (relevance-only) so the path is a no-op
+        # for callers that haven't opted in.
+        if params.mmr_lambda < 1.0:
+            fused = mmr_diversify(
+                fused,
+                lam=params.mmr_lambda,
+                top_k=max(params.k_rerank_in, params.k_final),
+            )
 
         # 4) Rerank top candidates. If the reranker is a no-op/fallback, the
         #    hits come back with their fusion score intact.

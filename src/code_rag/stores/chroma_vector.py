@@ -190,6 +190,40 @@ class ChromaVectorStore(VectorStore):
     def count(self) -> int:
         return int(self._require().count())
 
+    def list_paths(self) -> set[str]:
+        """All distinct paths currently in the store.
+
+        Phase 26: used by the eval gate to filter ground-truth cases down to
+        paths actually in the index. Mined transcripts reference files Claude
+        opened from worktree clones, deleted files, or roots not currently
+        configured — including them artificially depresses recall.
+
+        Paginated because Chroma's `get` materializes one SQLite parameter per
+        row internally; on 80K+ chunk collections an unpaginated call hits
+        SQLITE_MAX_VARIABLE_NUMBER and raises "too many SQL variables". 5000
+        per page keeps us well under the limit while only making ~20 round
+        trips on a 100K-chunk index.
+        """
+        coll = self._require()
+        out: set[str] = set()
+        page = 5000
+        offset = 0
+        while True:
+            res = coll.get(include=["metadatas"], limit=page, offset=offset)
+            metas = res.get("metadatas") or []
+            if not metas:
+                break
+            for m in metas:
+                if not m:
+                    continue
+                p = m.get("path")
+                if isinstance(p, str) and p:
+                    out.add(p)
+            if len(metas) < page:
+                break
+            offset += page
+        return out
+
     # ---- internal -----------------------------------------------------------
 
     def _require(self) -> Any:

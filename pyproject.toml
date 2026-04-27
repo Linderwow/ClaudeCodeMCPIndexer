@@ -38,6 +38,12 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
 ]
+# Phase 29: cross-encoder reranker. Heavyweight — only install if you want
+# to switch reranker.kind to "cross_encoder" in config.toml. Adds ~2 GB of
+# wheels (torch + transformers + sentence-transformers).
+cross-encoder = [
+    "sentence-transformers>=3.0",
+]
 
 [project.scripts]
 code-rag = "code_rag.cli:main"

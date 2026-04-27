@@ -1,0 +1,1610 @@
+[
+  {
+    "query": "YOu want to put in in existing .md file?",
+    "expected": [
+      {
+        "path": "Groundworks.Sales/server/test/Sales.E2E.Tests/Documentation/E2E-TEST-ARCHITECTURE.md"
+      }
+    ]
+  },
+  {
+    "query": "For reoccuring opportunity do you validate the pop up on new opportunity create?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/ReoccurringOpportunitySteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "What happens on this scenario? AgentDismissesTheOpportunityClosedModalViaStopBooking back end in details for validations",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/ReoccurringOpportunitySteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "Did you make sure validation when we create new opportunity or stop booking flow for these scenarios?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/ReoccurringOpportunitySteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "Did you exclude best fit from all the scenarios???",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/PreferenceSearchSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "do don't have to trip all the scenarios down as we still want to schedule appointments and make sure property and opportunity types are not bugged/chanhed during process that's why we validation before after or whatever mechanisms is the best.",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/CommercialToggleSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "Does it click on <button id=\"prev-seven\" class=\"btn btn-sm\"><i class=\"bi bi-chevron-left\"></i> Previous 7 Days </button> for previous 7 calendar days validation scenario?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Pages/CalendarPage.cs"
+      }
+    ]
+  },
+  {
+    "query": "I'll wait for migration to happen as I am not a developer. Is my current test data creation and other stuff lined up to work seamlessly what migration is done? I think they will be using inspectorId period.",
+    "expected": [
+      {
+        "path": "appointment-center/server/Appointment/SalesResourceManager/Services/CalendarBlockService.cs"
+      }
+    ]
+  },
+  {
+    "query": "Why are we still assiming that there will be userId column",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Services/TestDayReservation.cs"
+      }
+    ]
+  },
+  {
+    "query": "Handled what's not handled with proper db validation",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/CreateOpportunityAndBookAppointmentSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "I want to increase trade frequency to be able to train right?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "why don't we want to use historic data? How else are we going to learn on the previously taken trades?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "can it also adjust hyperparameters for better trades?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "I mean that's the point. To trade with perfectly present hyperparameters for more profitable trading no?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "How can I see that its aiming at taking a trade?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "So ML isn't working now or what?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "Is it going to reset every time????",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "We do we want to reset everything? I thought learning tweaks these params and in order to make it better",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "There is no smart trailing?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "What params are actually tweaked through historical data or what would world class institutional trader do with AI tweaking based on ML and stuff like that?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "why max 3?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "How to fix the bug?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "Can you deep research why immidiate bracketless trades get trigger upon stop loss?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "Why can't you just fix bracketless entries",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "Scan the strategy and see how good it is. Is it world class breaking super learner and extraordinary institutional automated strategy?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "How frequently and smart is MNQAlpha strategy",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "it took one profitable trade. Seems decent or more frequency will be needed  for better training?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "MNQAlpha exited even before hitting stop loss?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "I already have endpoint automated. Right an adjacent script to test it exactly how pro would",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/OnlineBookerV2ApiSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "you want to right 5?",
+    "expected": [
+      {
+        "path": "availability-perf-tests/AvailabilityPerfTests/AvailabilityEndpointTests.cs"
+      }
+    ]
+  },
+  {
+    "query": "What would be the mechanism to handle failing submissions? resend when googleAPI is back up? or what's the mechanism to capture failed submissions currently?",
+    "expected": [
+      {
+        "path": "appointment-center/server/Appointment/OnlineBooker/Endpoints/AppointmentAvailabilityEndpoint.cs"
+      }
+    ]
+  },
+  {
+    "query": "Should I still leave trade placing on limit orders instead of market orders? Also for trend days should there be a profit take in a bracket?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "It takes super long to load 5 days on chart with the strategy. Any suggestions?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "Can you check that everything is working as expected?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "Isn't something to do with retraining at 5 pm?",
+    "expected": [
+      {
+        "path": "run_all.py"
+      }
+    ]
+  },
+  {
+    "query": "I just had bracketless entry. Do you know why? Deep research pls",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "Can I retrain it now so I will run smoothly?",
+    "expected": [
+      {
+        "path": "train_rl.py"
+      }
+    ]
+  },
+  {
+    "query": "Then why don't we line up everything for it to work properly?",
+    "expected": [
+      {
+        "path": "rl_env.py"
+      }
+    ]
+  },
+  {
+    "query": "pick up where you left off",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "How many phases left? Implement the rest of them",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "Do everything which can benefit my world class strategy and make it as sharp as japanese yakudza sword",
+    "expected": [
+      {
+        "path": "train_gate.py"
+      }
+    ]
+  },
+  {
+    "query": "What would make it ideal and absolutely groundbreaking and aligns with all the edges and my strategy? Audit everything from A to Z to ensure everything is intact and world class institutional. Or it is already super sharp as the tip of damascus steel sword?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "pick up where you left and make sure everything for the strategy,scripts and edges are intact.",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "Why don't brackets change number of contracts based on what I hold after partial profit take?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "Is it still useful? ML Direction Model\tUse ML Filter ☐\tOFF (correct)\tdirection_model.py → predicts BUY/SELL/FLAT. Was disabled because it never reaches 0.70 confidence — always returns FLAT. Was wasting cycles.",
+    "expected": [
+      {
+        "path": "run_all.py"
+      }
+    ]
+  },
+  {
+    "query": "But 134 or whatever trades in 7 years is super inefficient yeah?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "Check why the strategy enters TrendContinuation so rarely.",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "any other fixes that can take world class institutional trades? How many edge do we have implemented?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "Explain how edges get switched and how each works",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "reaudit strategy and see what might be failing.",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "I am using bullenox connection which gives real time data...",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "What does ES=0 mean? Neutral?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "can you set in instructions to change the print of the version in NT output so I can tell that compilation went through?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "HOw to handle caveat?",
+    "expected": [
+      {
+        "path": "run_all.py"
+      }
+    ]
+  },
+  {
+    "query": "No more issues?",
+    "expected": [
+      {
+        "path": "offline_replay.py"
+      }
+    ]
+  },
+  {
+    "query": "ORB window was anchored to Globex session start (6pm ET Sunday), not 9:30 AM ET Monday. Your chart uses CME Globex 24h template (confirmed by the 4:58-5:02pm flatten window at line 874). This meant orbH/orbL were being computed over Sunday evening bars, and ORBBreak/ORBRetest would fire against wrong levels during RTH. Fixed — ORB now explicitly anchored to the 9:30 ET bar (tMin=570), with separate orbBars counter decoupled from sessBars. Plus session-start invalidates stale ORB so overnight SweepFade can't trigger off yesterday's ORB levels.",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "Do these \n$0: Fix the C# writer to populate microstructure into trade rows\n$0: Get FOMC/NFP calendar from ForexFactory scraping",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "Why did you push without test absolutely everything e2e?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "So if the main gate regression (0.72 → 0.65) which is a code problem how do we fix it then?",
+    "expected": [
+      {
+        "path": "train_gate_institutional.py"
+      }
+    ]
+  },
+  {
+    "query": "How is sizing managed for Alpha?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "Status is degraded?",
+    "expected": [
+      {
+        "path": "edge_cusum.py"
+      }
+    ]
+  },
+  {
+    "query": "Why does ES is -1 for trend? \n04/19/2026 18:44:00 | HUNTING: PULLBACK ZONE(22t to EMA21) AT 10-BAR HIGH  trend=-1 ES=0 vol=OK GATE=TAKE",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "What happens on news? Before after?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "Are edges hardcoded to run in certain days?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "Why are entries disabled between 7 and 7:59?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "pick up where you leff off",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "What is this issue \n/home/vsts/work/1/s/server/Appointment/Opportunities/Handlers/CreateNewHomeownerOpportunityHandler.cs(59,11): error S1481: Remove the unused local variable 'message'. [/home/vsts/work/1/s/server/Appointment/Appointment.csproj]",
+    "expected": [
+      {
+        "path": "appointment-center/server/Appointment/Opportunities/Handlers/CreateNewHomeownerOpportunityHandler.cs"
+      }
+    ]
+  },
+  {
+    "query": "What's the most professional?",
+    "expected": [
+      {
+        "path": "appointment-center/server/Appointment/Opportunities/Handlers/CreateNewHomeownerOpportunityHandler.cs"
+      }
+    ]
+  },
+  {
+    "query": "Anything else is needed to be retrained? Is retraining script set up to run automatically?",
+    "expected": [
+      {
+        "path": "train_rl.py"
+      }
+    ]
+  },
+  {
+    "query": "Sales managers should also be able to see: Call Center, Calendar, and Revisits based on how the menu is currently set.",
+    "expected": [
+      {
+        "path": "home-page/CLAUDE.md"
+      }
+    ]
+  },
+  {
+    "query": "As I understand it currnetly looks for these records instead of creating once from scratch?\nActivityPanelDetails\t2 / 15\nActivityPanelActionButtons\t5 / 19",
+    "expected": [
+      {
+        "path": "home-page/server/HomePage.E2E.Tests/Documentation/DYNAMIC_TEST_DATA.md"
+      }
+    ]
+  },
+  {
+    "query": "What APIs should/can I use the seed the data? I want to know exactly",
+    "expected": [
+      {
+        "path": "home-page/server/HomePage.E2E.Tests/Services/TestDataBuilder.cs"
+      }
+    ]
+  },
+  {
+    "query": "How to get auth for the endpoints that have checkmark?",
+    "expected": [
+      {
+        "path": "home-page/server/HomePage.E2E.Tests/Helpers/AuthHelper.cs"
+      }
+    ]
+  },
+  {
+    "query": "Tell me keys for each keyvault",
+    "expected": [
+      {
+        "path": "home-page/server/HomePage.E2E.Tests/Helpers/AzureKeyVaultHelper.cs"
+      }
+    ]
+  },
+  {
+    "query": "Can you lets say schedule appointment endpoints to handle booked and issued phases? opportunity endpoint?",
+    "expected": [
+      {
+        "path": "appointment-center/server/Appointment/Appointments/Endpoints/ScheduleAppointmentEndpoint.cs"
+      }
+    ]
+  },
+  {
+    "query": "Why scheuled, issued,opportunity still select? Check proper phase names",
+    "expected": [
+      {
+        "path": "appointment-center/server/Appointment/Persistence/Configurations/OpportunityPhaseConfiguration.cs"
+      }
+    ]
+  },
+  {
+    "query": "So APIs need some actual data from the data base? Find out what's needed.",
+    "expected": [
+      {
+        "path": "home-page/server/HomePage.E2E.Tests/Services/TestReferenceData.cs"
+      }
+    ]
+  },
+  {
+    "query": "Some of the scenarious we just need an opporutnity without appointment, that's why I am asking how we create that kind of test data",
+    "expected": [
+      {
+        "path": "appointment-center/server/Appointment/Opportunities/Endpoints/OnlineBooker/ExternalCreateOpportunityEndpoint.cs"
+      }
+    ]
+  },
+  {
+    "query": "Read the entire file C:\\Users\\Alex\\Documents\\NinjaTrader 8\\bin\\Custom\\Strategies\\MNQAlpha.cs and provide a comprehensive summary of every feature, mechanism, and technique used. Include:\n1. All edges and their entry logic\n2. All exit/management logic\n3. The learning engine details\n4. The ML integration details\n5. Position sizing logic\n6. Any unique or advanced techniques\n7. Line counts for each major section\n\nRead the file in chunks if needed - it's large. Start from the beginning and read all the way through.",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "B+C but why not + D?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "Do 7 and I thought 8 was already impleemnted... Can 9 be achieved through code?",
+    "expected": [
+      {
+        "path": "analytics.py"
+      }
+    ]
+  },
+  {
+    "query": "I mean like ride the emas as long as world class intitutional trader would? How can that be implemented. Like having a certain professional stop loss and then trail up as long as trend is valid. Is that already implemented? But then trend gets invalid and we can hunt for a differetn time of trade? Or how would world class do?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "Gate is too conservative can be loosen up?",
+    "expected": [
+      {
+        "path": "trade_gate_pnl.py"
+      }
+    ]
+  },
+  {
+    "query": "So the entire strategy is absolutely impecable and the bracketless trade bug is fixed once and for all?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "But reversal trades might not be signaled by 1 or 4 hours? Make sure all the edge are absolutely groundbreaking and ideal. Also for trend days. Would it be smart to set the profit take super high and just move stop loss towards it as long as trend rides EMAs and there is no reversal signals? What would be absolutely institutionally professional?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "So how to fix this issue from happening in the future?",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "How to get rid off bracketless and transients completely? Give me a plan if its real.",
+    "expected": [
+      {
+        "path": "MNQAlpha.cs"
+      }
+    ]
+  },
+  {
+    "query": "can you run the tests?",
+    "expected": [
+      {
+        "path": "groundworks-e2e/support/keyvault-helper.ts"
+      }
+    ]
+  },
+  {
+    "query": "What are the issues with getAvailabilities or something with migration for inspectors or users since e2e tests are failing. Clean up or test creation is failing. Currently VPN is off so you won't be able to run it. Research without running for now.",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Services/TestDayReservation.cs"
+      }
+    ]
+  },
+  {
+    "query": "check C:\\Users\\Alex\\RiderProjects\\home-page\\docs\\behavioral-tree.md",
+    "expected": [
+      {
+        "path": "home-page/docs/behavioral-tree.md"
+      }
+    ]
+  },
+  {
+    "query": "Validate with the backend what stop booking buttons do",
+    "expected": [
+      {
+        "path": "appointment-center/server/Appointment/Opportunities/Handlers/OpportunityDispositionHandler.cs"
+      }
+    ]
+  },
+  {
+    "query": "So how to fit the condition for best availability block so we can insert exactly what required",
+    "expected": [
+      {
+        "path": "appointment-center/server/Appointment/Appointments/Handlers/GetBestAvailabilityHandler.cs"
+      }
+    ]
+  },
+  {
+    "query": "Can we set up a mechanism for VRT and e2e tests to detect the main screen size and you that as resolution to run the tests?",
+    "expected": [
+      {
+        "path": "groundworks-e2e/playwright.config.ts"
+      }
+    ]
+  },
+  {
+    "query": "Find out the issues now",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/CalendarAppointmentManagementSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "Find out exactly what's broken and fix it or ask me what you need exactly for me to help you",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Pages/CFIConfigurationPage.cs"
+      }
+    ]
+  },
+  {
+    "query": "We are doing much better. Keep going what you can fix.",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Pages/CFIConfigurationPage.cs"
+      }
+    ]
+  },
+  {
+    "query": "Explore the appointment-center repo to understand:\n1. What is this project? (check package.json, README, or top-level config files)\n2. Is there any existing e2e test infrastructure? (look for playwright, cypress, or any test folders)\n3. What does the UI look like - is it a \"Call Center\" app, a \"Calendar\" app, or both?\n4. Check for any references to \"home-page\" repo or related projects\n\nBe thorough - check package.json, any test configs, project structure, and any CLAUDE.md or similar docs.",
+    "expected": [
+      {
+        "path": "appointment-center/README.md"
+      }
+    ]
+  },
+  {
+    "query": "Read C:\\Users\\Alex\\RiderProjects\\home-page\\server\\HomePage.E2E.Tests\\Pages\\ActivityPanelPage.cs and write it to C:\\Users\\Alex\\RiderProjects\\appointment-center\\server\\AppointmentCenter.E2E.Tests\\Pages\\ActivityPanelPage.cs with ALL occurrences of `HomePage.E2E.Tests` replaced with `AppointmentCenter.E2E.Tests`. Use Read then Write tools.",
+    "expected": [
+      {
+        "path": "home-page/server/HomePage.E2E.Tests/Pages/ActivityPanelPage.cs"
+      }
+    ]
+  },
+  {
+    "query": "Search the codebase at C:\\Users\\Alex\\RiderProjects\\appointment-center for the DefaultWeeklyAvailabilityBlocks table schema or entity. I need to know the exact column names. Look in:\n1. EF Core entity/model classes\n2. Migration files\n3. Any SQL scripts that CREATE or ALTER this table\n\nJust return the column names.",
+    "expected": [
+      {
+        "path": "appointment-center/server/Appointment/Migrations/20250723161455_AddDefaultWeeklyAvailabilityBlocksAndGeographicalZonesEntities.cs"
+      }
+    ]
+  },
+  {
+    "query": "<div class=\"form-check form-switch\"><input type=\"checkbox\" id=\"commercialToggle\" class=\"form-check-input\"><label for=\"commercialToggle\" class=\"form-check-label\">Commercial Opportunity</label></div><input type=\"checkbox\" id=\"commercialToggle\" class=\"form-check-input\"> call center <input type=\"checkbox\" id=\"commercialToggle\" formcontrolname=\"isCommercial\" class=\"form-check-input ng-untouched ng-pristine ng-valid\" ng-reflect-name=\"isCommercial\">create oppotunity. it lives in search and also in create opportunity in call-center",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/CommercialToggleSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "Can you deep research into flaky timing issue?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Pages/CFIConfigurationPage.cs"
+      }
+    ]
+  },
+  {
+    "query": "any way tests can be fixed?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Helpers/DatabaseHelper.cs"
+      }
+    ]
+  },
+  {
+    "query": "Don't we insert availability for one of the CFIs from the dropdown to get some availability?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/PreferenceSearchSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "How can we fix that \"A configured geozone can be removed using the x icon\" (CFI Configuration). Research flakiness",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/CFIConfigurationSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "is there a hard wait?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Pages/CFIConfigurationPage.cs"
+      }
+    ]
+  },
+  {
+    "query": "can you click on the last avaialbility not the first one?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/PreferenceSearchSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "Clean up should be smart and detect what else is there to delete so it won't be any hiccups",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/CreateOpportunityAndBookAppointmentSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "Isn't like pattern too broad?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Services/TestDataService.cs"
+      }
+    ]
+  },
+  {
+    "query": "clean up errors yes and what else is there?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Services/TestDataService.cs"
+      }
+    ]
+  },
+  {
+    "query": "Why not fix concretely. If exist then hard delete?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Services/TestDataService.cs"
+      }
+    ]
+  },
+  {
+    "query": "these were phases 1 and 2? Why didn't you implement everything?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/CalendarAppointmentManagementSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "why don't you run the ones that failed and then fix them until all of them are fixed??? Then when they are all fixed run the entire suite. Stop wasting time.",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Pages/CreateOpportunityPage.cs"
+      }
+    ]
+  },
+  {
+    "query": "What's the exact error or screenshot",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/PreferenceSearchSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "Ideas on how to concretely fix them?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/AvailabilityBlockManagementSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "Why can't we work with different CFIs? If one reserved then just work with another one?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/AvailabilityBlockManagementSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "What's the concrete fix?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Services/TestDayReservation.cs"
+      }
+    ]
+  },
+  {
+    "query": "What's the concrete fix? deep research",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/CreateOpportunityAndBookAppointmentSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "Why is it still running?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Services/TestDataService.cs"
+      }
+    ]
+  },
+  {
+    "query": "No as an end user you actually need to click on actual button. I think clean up script is not in the greatest shape. See if you can clean up all possbile records for this address?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Pages/CreateOpportunityPage.cs"
+      }
+    ]
+  },
+  {
+    "query": "How can we prevent this pile up? Maybe prior to running the tests check as well should be in place?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Hooks/TestHooks.cs"
+      }
+    ]
+  },
+  {
+    "query": "What if there is appointment already on that availability block?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Services/TestDataCleanup.cs"
+      }
+    ]
+  },
+  {
+    "query": "so what will happen if there is an appointment?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Services/TestDataCleanup.cs"
+      }
+    ]
+  },
+  {
+    "query": "we are unlinking availability blocks but are we actually hard deleting them?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Services/TestDataRegistry.cs"
+      }
+    ]
+  },
+  {
+    "query": "Is it going to be working for all other scenarios?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Services/TestDataService.cs"
+      }
+    ]
+  },
+  {
+    "query": "Is there a smart approach to this? Like just pick an inspector and focus on 1 day just for that particular scenario tests?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Services/TestDataService.cs"
+      }
+    ]
+  },
+  {
+    "query": "but there should be a detection if there are blocks or appoiintments exist for prepicked day?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Services/TestDayReservation.cs"
+      }
+    ]
+  },
+  {
+    "query": "are there any dangerious or huge deletes that might delete unnecessary data as a part of clean up or everything is 100% accurate?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Services/TestDataCleanup.cs"
+      }
+    ]
+  },
+  {
+    "query": "What would you do?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/CalendarAppointmentManagementSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "Why are you changing all to book appointment?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/PreferenceSearchSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "Why don't we run delete statement we already have for clean ups or that will kill the purpose?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/PreferenceSearchSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "You can use real addreess?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Services/TestDataService.cs"
+      }
+    ]
+  },
+  {
+    "query": "Look at file in C:\\Users\\Alex\\RiderProjects\\appointment-center\\docs and then plan the implementation of the rest of e2e tests",
+    "expected": [
+      {
+        "path": "appointment-center/docs/e2e-coverage-plan.md"
+      }
+    ]
+  },
+  {
+    "query": "What would be recommended concrete fixes or improvements?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Services/TestDataService.cs"
+      }
+    ]
+  },
+  {
+    "query": "Where will disposition, appointmenttypeId and other static ids coming from?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Services/TestReferenceData.cs"
+      }
+    ]
+  },
+  {
+    "query": "1 page is blank. Need to know what happened and also need failsafe mechanism to start the scenario or whatver you think would be super smart in this situation.",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Hooks/TestHooks.cs"
+      }
+    ]
+  },
+  {
+    "query": "One of the login pages gets stuck any idea why?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Hooks/TestHooks.cs"
+      }
+    ]
+  },
+  {
+    "query": "do not reduct parallel features and donot touch smart runner mechanism that determines how many threads to run also, do not do   9. The NavigateToSearchPageAsync cleanup removed URL navigation — verify it works on INT. Do the rest though",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/CFIConfigurationSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "That delet query will delete all the blocks... I need to delete only the ones I add during testing no? ─────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤\n  │ 5   │ Startup cleanup targets only        │ TestHooks.cs — tightened query to avoid deleting legitimate blocks                                      │\n  │     │ IsOneOff=1 blocks                   │",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Services/TestDataCleanup.cs"
+      }
+    ]
+  },
+  {
+    "query": "Can I have a mechanism that works for local and ci so I don't have to implement extra?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Hooks/TestHooks.cs"
+      }
+    ]
+  },
+  {
+    "query": "What CFIs availabilities get added to?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Services/TestDataService.cs"
+      }
+    ]
+  },
+  {
+    "query": "For now I want to handle this one it also possbily affects AgentCancelsAnInitialAppointmentAndVerifiesItIsRemovedFromTheCalendar",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/CalendarAppointmentManagementSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "Anything needs to change for the clean up because some of the blocks can be taken by appointments?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Services/TestDataCleanup.cs"
+      }
+    ]
+  },
+  {
+    "query": "What If I want to run scenarious separately in different order?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/CreateOpportunityAndBookAppointmentSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "Agressive clean up shouldn't be in place is what I meant",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Hooks/TestHooks.cs"
+      }
+    ]
+  },
+  {
+    "query": "So the scenarious are dependend because of the address?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/CreateOpportunityAndBookAppointmentSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "Did we create 2 opportunities per new homeowner scenario?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/CreateOpportunityAndBookAppointmentSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "Why can't we just handle all 3 scenarios with different addresses because what If I want to run them separately.",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Pages/CreateOpportunityPage.cs"
+      }
+    ]
+  },
+  {
+    "query": "Why don't we just clean up the availability so we don't have to deal with soft deletes in the future?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Services/TestDataService.cs"
+      }
+    ]
+  },
+  {
+    "query": "Use Symtopms excludedPostalCodes to find zip, then based on that find address already exists, delete the record completely and then create new record with this address which should emulate correct test data for this case. Make sure to think ahead and make things super smart for test data for the entire suite.",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/DisqualifyingSymptomsSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "Why can we have a dynamic pull of everything in chain before the scenario and be able to tell. What do you need from me as far as db tables?",
+    "expected": [
+      {
+        "path": "appointment-center/server/Appointment/Migrations/20250812121709_Table_Create_GeoZoneZipAndPostalCode.cs"
+      }
+    ]
+  },
+  {
+    "query": "Why is the address 305 something. Can we just pull the address from db and make sure everything matches it down the line?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Services/TestDataService.cs"
+      }
+    ]
+  },
+  {
+    "query": "Uniqueness can be achived through cleaning up the entire test data after scenario is run. Find correct and proper address in db and then work with it. DOn't clean up the address after the scenario is run so the same address can stay in db for the next same run if I need. Build logic around that. What do you think? Suggestions?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/DisqualifyingSymptomsSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "They are still 2 failures? What's the fix? Deeply research",
+    "expected": [
+      {
+        "path": "appointment-center/server/Appointment/SalesResourceManager/Services/CalendarBlockService.cs"
+      }
+    ]
+  },
+  {
+    "query": "Tell me what branch date and availability slot be returned as best fit?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Services/TestDataService.cs"
+      }
+    ]
+  },
+  {
+    "query": "DOn't you think it should just be handled through UI or DB?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/DisqualifyingSymptomsSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "The fix: the inspector must be at a branch that actually serves the SD area, not just one that happens to have the\n   zip in BranchZipAndPostalCodes. fix now and then run the tests",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Services/TestDataService.cs"
+      }
+    ]
+  },
+  {
+    "query": "for commercial opportunity do we check flag in db as isCommercial?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/CommercialToggleSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "What do you need from me to validate all that?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/CommercialToggleSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "Is there a way you can actually validate that data not just 1 exists.",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/CommercialToggleSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "can you insert travelling inspector way before it hits appointment block?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/MoveAppointmentSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "Find the implementation of `GetCalendarMetricsTextAsync` in the CalendarPage page object. Search in C:\\Users\\Alex\\RiderProjects\\appointment-center\\server\\AppointmentCenter.E2E.Tests\\Pages\\. Return the full method and surrounding context (selectors, any related metrics methods).",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Pages/CalendarPage.cs"
+      }
+    ]
+  },
+  {
+    "query": "Yeah, but did you fix the issues?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/CalendarFunctionalitySteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "Can you plan to fix both issues?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Services/TestDayReservation.cs"
+      }
+    ]
+  },
+  {
+    "query": "What's the definition of reocurring opportunity?",
+    "expected": [
+      {
+        "path": "appointment-center/server/Appointment/Services/OpportunityService.cs"
+      }
+    ]
+  },
+  {
+    "query": "I want exact scenario to find exact filter. or split into 2 scenarios. Plan it",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/PreferenceSearchSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "do we want to make sure they are no availabilities by cleaning them up to 100% get the warning?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/PreferenceSearchSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "So what's the reason it failing in isolation. Shouldn't be hard to figure out innnit?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Pages/CalendarPage.cs"
+      }
+    ]
+  },
+  {
+    "query": "Is there a way to warm up can prior to these scenarious running. Let's say during login steps and stuff?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/CFITravelerStatusSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "they used to succedd without issues. Why?",
+    "expected": [
+      {
+        "path": "appointment-center/server/Appointment/Appointments/Endpoints/AppointmentsAvailableEndpoint.cs"
+      }
+    ]
+  },
+  {
+    "query": "but how can there be two 9 am blocks for the same CFI? that's unrealistic.",
+    "expected": [
+      {
+        "path": "appointment-center/server/Appointment/Appointments/Handlers/ScheduleAppointmentHandler.cs"
+      }
+    ]
+  },
+  {
+    "query": "I want to know exact issues what exactly happened and exact concrete fix that will fix it all up for parallel execution.",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/CFITravelerStatusSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "For the automation fix: the AfterFeature RestoreAsync needs to use the correct inspector ID (the one from the UI,\n  not from FindCfiWithAvailabilityAsync). The same ID mismatch fix I added to the Background step needs to be\n  applied to BeforeFeature's snapshot too. Implemnet along with the rest of the planned items",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/CFITravelerStatusSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "Are they caused by parallel clean up or execution. I want to funnel and isolate every scenario perfectly which ever needed to be isolated. Research and find exact root issues and make sure everything is ideal like your life depends on it.",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Core/CfiTestCollection.cs"
+      }
+    ]
+  },
+  {
+    "query": "See deep what's remaining. Need to properly fix that.",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/CFITravelerStatusSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "look at C:\\Users\\Alex\\RiderProjects\\appointment-center\\docs and see what needs to be update",
+    "expected": [
+      {
+        "path": "appointment-center/docs/behavioral-tree.md"
+      }
+    ]
+  },
+  {
+    "query": "do it. is there a clean up script to clean test records based on test implementation and test intent?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Hooks/TestHooks.cs"
+      }
+    ]
+  },
+  {
+    "query": "Use real addresses. also why don't you insert availability to make sure it returns something?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/OnlineBookerV2ApiSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "revert and also tell me if reoccuring oportunity scenario passed?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/LeadIngestionApiSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "Why don't we insert test data instead of trying to find one? What's the logic behind reoccuring opp?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Services/TestDataService.cs"
+      }
+    ]
+  },
+  {
+    "query": "Do we need to update it and bring it up to date?",
+    "expected": [
+      {
+        "path": "appointment-center/CLAUDE.md"
+      }
+    ]
+  },
+  {
+    "query": "Based on these can you update docs forlder documents on coverage?",
+    "expected": [
+      {
+        "path": "appointment-center/docs/behavioral-tree.md"
+      }
+    ]
+  },
+  {
+    "query": "yeah. When testing things has to be reverted where they were afterwards like for put enable let's say we want to disable and then enable back up if that was original state",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/OtdApiSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "In the file C:\\Users\\Alex\\RiderProjects\\appointment-center\\client\\src\\app\\calendar\\components\\inspector\\inspector-configuration\\inspector-configuration.component.ts, find and return the exact code for the `isBranchOverrideFormValid` method. Also find `initializeBranchOverrides` and any lifecycle hook (ngOnInit, ngOnChanges, etc.) that calls it. Return the exact code for all of these.",
+    "expected": [
+      {
+        "path": "appointment-center/client/src/app/calendar/components/inspector/inspector-configuration/inspector-configuration.component.ts"
+      }
+    ]
+  },
+  {
+    "query": "In the Angular app at C:\\Users\\Alex\\RiderProjects\\appointment-center\\client, find the TypeScript class or interface `InspectorTemporaryBranchDto`. Show me:\n1. The class definition with its properties\n2. How startDate/endDate are serialized when creating a new instance (does it call toISOString, format the date, etc?)\n\nAlso check the inspector service's `updateInspector` method to see how the HTTP request is sent — particularly how the temporaryBranches payload is included in the request body.",
+    "expected": [
+      {
+        "path": "appointment-center/client/src/app/sdk/sdk.ts"
+      }
+    ]
+  },
+  {
+    "query": "Why does this say parallel scenarious when I want to run 1 feature per thread not 1 scenario per thread. feature contains scenarious.",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/XunitAssemblyInfo.cs"
+      }
+    ]
+  },
+  {
+    "query": "<a class=\"menu-item btn btn-link px-0\" href=\"https://call-center-dev.groundworks.com/calendar\" target=\"_self\"><div class=\"icon icon--pink\" ng-reflect-ng-class=\"icon--pink\"><i class=\"bi bi-calendar-event\" ng-reflect-ng-class=\"bi-calendar-event\"></i></div><span class=\"label\">Calendar</span></a> Why do we need to load /calendar if we could click on calendar app just like with any application when we access from home-page?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/CalendarAppointmentManagementSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "I am running the tests with VPN so there should be no firewall issues. please fix everything properly or find out the actual reason for failures",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Pages/CreateOpportunityPage.cs"
+      }
+    ]
+  },
+  {
+    "query": "These guys are still failing. The thing is why you are getting firewall issue because you get SSL error when I enable VPN so I can talk to you only when VPN is disabled. Is there a way to fix that?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/StepDefinitions/CalendarAppointmentManagementSteps.cs"
+      }
+    ]
+  },
+  {
+    "query": "In C:\\Users\\Alex\\RiderProjects\\appointment-center\\server\\AppointmentCenter.E2E.Tests\\Pages\\CFIConfigurationPage.cs, find ALL occurrences of:\n1. `window.ng?.coreTokens?.NgZone` or `coreTokens` \n2. `Symbol()` used as a fallback token\n3. Any NgZone injection patternList each occurrence with the exact line number and surrounding context (2-3 lines before and after).",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Pages/CFIConfigurationPage.cs"
+      }
+    ]
+  },
+  {
+    "query": "\"C:\\Users\\Alex\\Downloads\\Appointment Center.postman_collection.json\" yes please do",
+    "expected": [
+      {
+        "path": "appointment-center/server/Appointment.Integration.Tests/TestHelpers/TestWebApplicationFactory.cs"
+      }
+    ]
+  },
+  {
+    "query": "In the codebase at C:\\Users\\Alex\\RiderProjects\\appointment-center\\server, find the CalendarBlockService class and its GetCalendarBlocksAsync method. I need to understand what this service does, what parameters it requires, and what errors it could throw. Also check if it calls any external services (like SalesResourceManager/SRM) that could fail. Look in the Appointment project, Services directory, or wherever it might be located. Be thorough.",
+    "expected": [
+      {
+        "path": "appointment-center/server/Appointment/SalesResourceManager/Services/CalendarBlockService.cs"
+      }
+    ]
+  },
+  {
+    "query": "Quick exploration: In the file C:\\Users\\Alex\\RiderProjects\\appointment-center\\server\\AppointmentCenter.E2E.Tests\\Pages\\CalendarPage.cs, find:\n1. The static selector constants like CfiGroup, CfiGroupHeading, CfiGroupAppointments, AppointmentBlock, AppointmentTime, GroupHeaderDiv, AvailableInspectorRow, AvailableInspectorName, AvailableInspectorMoveButton\n2. Any existing retry/wait patterns used in other methods of this class for loading calendar content\n3. The WaitForCalendarToLoadAsync or similar methods if they exist\n\nReturn the relevant code snippets with line numbers.",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Pages/CalendarPage.cs"
+      }
+    ]
+  },
+  {
+    "query": "Is it because cannot run lead types. The we will need to add at least 1 leadtype to run?",
+    "expected": [
+      {
+        "path": "appointment-center/server/AppointmentCenter.E2E.Tests/Pages/CFIConfigurationPage.cs"
+      }
+    ]
+  },
+  {
+    "query": "‪C:\\Users\\Alex\\RiderProjects\\groundworks-web modern forms are here I think",
+    "expected": [
+      {
+        "path": "groundworks-web/CLAUDE.md"
+      }
+    ]
+  },
+  {
+    "query": "Currenly only legacy and modern exist. can you work with that until I added dropin?",
+    "expected": [
+      {
+        "path": "AppointmentCenter.API.IntegrationTests/Tests/OnlineBookingPipelineTests.cs"
+      }
+    ]
+  },
+  {
+    "query": "Did you update the doc?",
+    "expected": [
+      {
+        "path": "AppointmentCenter.API.IntegrationTests/docs/CONFLUENCE.md"
+      }
+    ]
+  },
+  {
+    "query": "Why no documentation on this project. Create clean understanding doc .md for this project",
+    "expected": [
+      {
+        "path": "groundworks-e2e/playwright.config.ts"
+      }
+    ]
+  },
+  {
+    "query": "● Update(HomePage.E2E.Tests\\StepDefinitions\\OpportunityContactsSteps.cs)\n  ⎿  Added 2 lines, removed 2 lines\n      141      const string country = \"USA\";\n      142      const string zip = \"23451\";\n      143\n      144 -    // Even numbers from 1700–1900 gives 101 candidates — more than enough.\n      144 +    // Even numbers from 1700–9900 gives 4101 candidates.\n      145      const int rangeStart = 1700;\n      146 -    const int rangeEnd = 1900;\n      146 +    const int rangeEnd = 9900;\n      147      const int step = 2; Can this be handled through like deleting opportunities?",
+    "expected": [
+      {
+        "path": "home-page/server/HomePage.E2E.Tests/Services/TestDataService.cs"
+      }
+    ]
+  },
+  {
+    "query": "<button class=\"btn btn-primary\" type=\"submit\"><!--bindings={\n  \"ng-reflect-ng-if\": \"false\"\n}--><span>Search</span></button>",
+    "expected": [
+      {
+        "path": "home-page/server/HomePage.E2E.Tests/Pages/BasePage.cs"
+      }
+    ]
+  },
+  {
+    "query": "Something is still wrong with these scenarious and search button is not being clicked on. Run deep research of the steps and executions",
+    "expected": [
+      {
+        "path": "home-page/server/HomePage.E2E.Tests/Pages/OpportunitySearchPage.cs"
+      }
+    ]
+  },
+  {
+    "query": "In the E2E test project at C:\\Users\\Alex\\RiderProjects\\home-page\\server\\HomePage.E2E.Tests, find all code related to Playwright browser launching, including BrowserFactory, any SlowMo/delay configuration, and browser launch options. Search for: SlowMo, LaunchAsync, BrowserTypeLaunchOptions, NewContextAsync, and any delay/timeout settings. Show the full relevant code sections with file paths and line numbers.",
+    "expected": [
+      {
+        "path": "home-page/server/HomePage.E2E.Tests/Core/BrowserFactory.cs"
+      }
+    ]
+  }
+]

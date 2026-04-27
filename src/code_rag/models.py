@@ -17,6 +17,11 @@ class ChunkKind(StrEnum):
     MODULE = "module"
     DOC = "doc"
     OTHER = "other"
+    # Phase 31: synthetic per-file "table of contents" chunk. One per file,
+    # text is `[path] / [language] / [symbols] <names>` so natural-language
+    # queries that ask "what does this module do" or "where is X" get a
+    # high-level handle on the file before drilling into symbol chunks.
+    FILE_SUMMARY = "file_summary"
 
 
 class Chunk(BaseModel):

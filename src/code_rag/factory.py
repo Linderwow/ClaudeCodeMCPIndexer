@@ -15,6 +15,9 @@ from code_rag.interfaces.vector_store import VectorStore
 from code_rag.rerankers.lm_chat import LMStudioChatReranker
 from code_rag.rerankers.lm_studio import LMStudioReranker
 from code_rag.rerankers.noop import NoopReranker
+# Cross-encoder reranker is OPTIONAL (requires sentence-transformers). We
+# import lazily inside build_reranker so the factory itself never fails to
+# import even if the optional dep isn't installed.
 from code_rag.stores.chroma_vector import ChromaVectorStore
 from code_rag.stores.kuzu_graph import KuzuGraphStore
 from code_rag.stores.sqlite_lexical import SqliteLexicalStore
@@ -81,9 +84,47 @@ def build_reranker(settings: Settings) -> Reranker:
             max_candidates=r.chat_max_candidates,
             max_chars_per_doc=r.chat_max_chars_per_doc,
         )
+    if r.kind == "cross_encoder":
+        # Phase 29: lazy import so the factory works even when the optional
+        # dep isn't installed. Construction itself raises a clear ImportError
+        # if sentence-transformers is missing.
+        from code_rag.rerankers.cross_encoder import CrossEncoderReranker
+        return CrossEncoderReranker(
+            model=r.model,
+            max_candidates=r.top_k_in,
+            max_chars_per_doc=r.cross_encoder_max_chars,
+            device=r.device,
+        )
     if r.kind == "noop":
         return NoopReranker()
     raise ValueError(f"Unknown reranker kind: {r.kind}")
+
+
+def build_query_rewriter(settings: Settings) -> object | None:
+    """Build the Phase 30 query rewriter, or return None if disabled.
+
+    Returns an `LMStudioQueryRewriter` instance with cache attached. The cache
+    is opened here (cheap, just creates the SQLite file). The MCP server /
+    CLI is responsible for closing it on shutdown.
+    """
+    qr = settings.query_rewriter
+    if not qr.enabled:
+        return None
+    from code_rag.retrieval.query_rewriter import (
+        LMStudioQueryRewriter,
+        RewriteCache,
+    )
+    cache: RewriteCache | None = None
+    if qr.cache:
+        cache = RewriteCache(settings.rewrite_cache_path)
+        cache.open()
+    base_url = qr.base_url or settings.embedder.base_url
+    return LMStudioQueryRewriter(
+        base_url=base_url,
+        model=qr.model or "",
+        cache=cache,
+        timeout_s=qr.timeout_s,
+    )
 
 
 def build_graph_store(settings: Settings, *, read_only: bool = False) -> GraphStore:

@@ -42,13 +42,16 @@ class EmbedderConfig(BaseModel):
 
 
 class RerankerConfig(BaseModel):
-    # "lm_studio" : the OpenAI-compatible /v1/rerank endpoint (Jina-style).
-    #               LM Studio itself does NOT implement this endpoint — kept
-    #               for backends that do (vLLM, text-embeddings-inference).
-    # "lm_chat"   : Phase 24 listwise reranker that uses /v1/chat/completions
-    #               on a small chat model. The right choice for LM Studio.
-    # "noop"      : explicit no-op, useful for ablation eval and CI.
-    kind: Literal["lm_studio", "lm_chat", "noop"] = "lm_studio"
+    # "lm_studio"     : OpenAI-compatible /v1/rerank endpoint (Jina-style).
+    #                   LM Studio itself does NOT implement this endpoint — kept
+    #                   for backends that do (vLLM, text-embeddings-inference).
+    # "lm_chat"       : Phase 24 listwise reranker that uses /v1/chat/completions
+    #                   on a small chat model. The right choice for LM Studio.
+    # "cross_encoder" : Phase 29 sentence-transformers CrossEncoder (e.g.
+    #                   BAAI/bge-reranker-v2-m3). Faster + more deterministic
+    #                   than lm_chat. Requires `pip install -e ".[cross-encoder]"`.
+    # "noop"          : explicit no-op, useful for ablation eval and CI.
+    kind: Literal["lm_studio", "lm_chat", "cross_encoder", "noop"] = "lm_studio"
     base_url: str
     model: str
     top_k_in: int = 50
@@ -58,6 +61,12 @@ class RerankerConfig(BaseModel):
     # the LLM (the rest stay in their RRF order). Bounded for latency.
     chat_max_candidates: int = 20
     chat_max_chars_per_doc: int = 300
+    # Phase 29: for kind="cross_encoder" only. CPU is fine; set to "cuda"
+    # if you have a GPU and want to use it.
+    device: str | None = None
+    # Phase 29: max chars per doc fed into the cross-encoder. 600 covers
+    # signature + a few body lines on most languages.
+    cross_encoder_max_chars: int = 600
 
 
 class VectorStoreConfig(BaseModel):
@@ -96,6 +105,25 @@ class WatcherConfig(BaseModel):
     debounce_ms: int = 500
 
 
+class QueryRewriterConfig(BaseModel):
+    """Phase 30: query expansion / rewriting.
+
+    When `enabled = true`, the searcher pre-processes each query into
+    casing variants (snake_case ↔ CamelCase ↔ spaced) and — if `model`
+    is set and loaded — uses a small chat model to suggest related
+    identifiers. Each expansion becomes a parallel search arm.
+
+    Cache is on by default to keep latency predictable on repeated queries.
+    Cache file lives under `paths.data_dir`.
+    """
+    enabled: bool = False
+    base_url: str = ""
+    model: str | None = None        # if None, only local (free) rewrite runs
+    timeout_s: float = 8.0
+    cache: bool = True
+    db: str = "rewrite_cache.db"
+
+
 class McpConfig(BaseModel):
     name: str = "code-rag"
 
@@ -112,6 +140,7 @@ class Settings(BaseModel):
     indexer: IndexerConfig = Field(default_factory=IndexerConfig)
     watcher: WatcherConfig = Field(default_factory=WatcherConfig)
     mcp: McpConfig = Field(default_factory=McpConfig)
+    query_rewriter: QueryRewriterConfig = Field(default_factory=QueryRewriterConfig)
 
     # Resolved absolute paths to vector DB dir, kuzu DB dir, FTS file.
     @property
@@ -139,6 +168,11 @@ class Settings(BaseModel):
     def file_hashes_path(self) -> Path:
         """Per-file content hash registry — Phase 14 incremental indexing."""
         return self.paths.data_dir / "file_hashes.db"
+
+    @property
+    def rewrite_cache_path(self) -> Path:
+        """Phase 30: query rewrite cache (SQLite k/v with TTL)."""
+        return self.paths.data_dir / self.query_rewriter.db
 
     def all_roots(self) -> list[Path]:
         """Union of the user's curated `config.toml` roots and any

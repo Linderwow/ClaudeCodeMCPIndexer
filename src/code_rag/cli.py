@@ -16,6 +16,7 @@ from code_rag.factory import (
     build_embedder,
     build_graph_store,
     build_lexical_store,
+    build_query_rewriter,
     build_reranker,
     build_vector_store,
 )
@@ -793,6 +794,140 @@ def eval(
     sys.exit(asyncio.run(_run()))
 
 
+@main.command("eval-gate")
+@click.option("--fixture", type=click.Path(exists=True, path_type=Path), default=None,
+              help="Eval fixture to run. Default: src/code_rag/eval/fixtures/manual_eval.json")
+@click.option("--baseline", type=click.Path(path_type=Path), default=None,
+              help="Locked baseline JSON. Default: data/eval/baseline_locked.json")
+@click.option("--max-regression-pp", default=1.0, show_default=True, type=float,
+              help="Fail if any headline metric drops by more than this (in pp).")
+@click.option("--write-baseline", is_flag=True,
+              help="Write the current run as the new locked baseline. Use after "
+                   "a verified improvement to update the gate.")
+@click.option("--label", default=None,
+              help="Optional label written into the saved report.")
+@click.pass_context
+def eval_gate(
+    ctx: click.Context, fixture: Path | None, baseline: Path | None,
+    max_regression_pp: float, write_baseline: bool, label: str | None,
+) -> None:
+    """Phase 26: regression gate over the canonical eval fixture.
+
+    Pipeline:
+      1. Run the standard eval (same searcher as MCP / production).
+      2. Compare every headline metric vs the locked baseline.
+      3. Exit non-zero if any metric regresses more than --max-regression-pp.
+
+    Use this in a pre-commit hook, CI step, or before merging a phase. With
+    `--write-baseline`, the current run becomes the new gate floor — only do
+    that after you've verified the change is a real improvement.
+    """
+    from code_rag.eval.harness import EvalReport, load_cases, run_eval
+    settings = ctx.obj["settings"]
+    repo_root = Path(__file__).resolve().parents[2]
+    fixture_path = fixture or (
+        repo_root / "src" / "code_rag" / "eval" / "fixtures" / "manual_eval.json"
+    )
+    baseline_path = baseline or (repo_root / "data" / "eval" / "baseline_locked.json")
+
+    async def _run() -> int:
+        embedder = build_embedder(settings)
+        vec = build_vector_store(settings)
+        lex = build_lexical_store(settings)
+        reranker = build_reranker(settings)
+        if not settings.index_meta_path.exists():
+            click.echo("FAIL  no index yet — run `code-rag index` first", err=True)
+            return 1
+        await embedder.health()
+        meta = ChromaVectorStore.build_meta(
+            embedder_kind=settings.embedder.kind,
+            embedder_model=embedder.model,
+            embedder_dim=embedder.dim,
+        )
+        vec.open(meta)
+        lex.open()
+        # Phase 30: wire the query rewriter so eval measures the SAME
+        # pipeline production uses (rewriter on or off based on config).
+        rewriter = build_query_rewriter(settings)
+        try:
+            searcher = HybridSearcher(
+                embedder, vec, lex, reranker, rewriter=rewriter,
+            )
+            cases = load_cases(fixture_path)
+            index_meta_dict = json.loads(settings.index_meta_path.read_text("utf-8"))
+            report = await run_eval(
+                cases, searcher,
+                top_k=10, rerank_in=settings.reranker.top_k_in,
+                label=label or "eval-gate",
+                index_meta=index_meta_dict,
+            )
+            click.echo(json.dumps(report.summary(), indent=2))
+
+            if write_baseline:
+                baseline_path.parent.mkdir(parents=True, exist_ok=True)
+                baseline_path.write_text(
+                    json.dumps(report.as_dict(), indent=2), encoding="utf-8",
+                )
+                click.echo(f"\n[wrote new baseline -> {baseline_path}]", err=True)
+                return 0
+
+            if not baseline_path.exists():
+                click.echo(
+                    f"\nno baseline at {baseline_path} — run with --write-baseline "
+                    f"once to lock the current run as the floor.",
+                    err=True,
+                )
+                return 0
+
+            baseline_data = json.loads(baseline_path.read_text("utf-8"))
+            from code_rag.eval.harness import EvalResult
+            base_report = EvalReport(
+                cases=[
+                    EvalResult(
+                        query=str(c.get("query", "")),
+                        rank=c.get("rank"),
+                        latency_ms=float(c.get("latency_ms", 0.0)),
+                        top_paths=list(c.get("top_paths", [])),
+                        tag=c.get("tag"),
+                    )
+                    for c in baseline_data.get("cases", [])
+                ],
+                label=baseline_data.get("label"),
+                index_meta=baseline_data.get("index_meta"),
+            )
+            diff = report.diff(base_report)
+            click.echo("\ndiff vs baseline:")
+            click.echo(json.dumps(diff, indent=2))
+            worst = min(diff["deltas_pp"].values()) if diff["deltas_pp"] else 0.0
+            if worst < -max_regression_pp:
+                click.echo(
+                    f"\nFAIL  {abs(worst):.2f}pp regression > {max_regression_pp}pp "
+                    f"threshold. Investigate before merging.",
+                    err=True,
+                )
+                return 2
+            click.echo(
+                f"\nPASS  worst delta {worst:+.2f}pp within {max_regression_pp}pp threshold.",
+            )
+            return 0
+        finally:
+            vec.close()
+            lex.close()
+            if isinstance(embedder, LMStudioEmbedder):
+                await embedder.aclose()
+            if isinstance(reranker, LMStudioReranker):
+                await reranker.aclose()
+            # Phase 30: tear down rewriter cache + http client.
+            if rewriter is not None:
+                from code_rag.retrieval.query_rewriter import LMStudioQueryRewriter
+                if isinstance(rewriter, LMStudioQueryRewriter):
+                    await rewriter.aclose()
+                    if rewriter._cache is not None:  # pyright: ignore[reportPrivateUsage]
+                        rewriter._cache.close()  # pyright: ignore[reportPrivateUsage]
+
+    sys.exit(asyncio.run(_run()))
+
+
 @main.command("fsck")
 @click.option("--fix", "auto_fix", is_flag=True,
               help="Attempt safe auto-repairs (drop missing dynamic roots, prune orphan file-hash rows).")
@@ -1040,10 +1175,15 @@ def git_log_index(ctx: click.Context, root: Path | None, max_commits: int, max_c
               help="Override transcripts root (default: ~/.claude/projects).")
 @click.option("--include-source/--no-include-source", default=False,
               help="Keep _source debug fields on each pair.")
+@click.option("--filter-to-index/--no-filter-to-index", default=True,
+              show_default=True,
+              help="Phase 26: drop cases whose expected paths aren't in the "
+                   "current vector store. Gives a true recall ceiling.")
 @click.pass_context
 def eval_mine(
     ctx: click.Context, output: Path, max_pairs: int,
     transcripts_dir: Path | None, include_source: bool,
+    filter_to_index: bool,
 ) -> None:
     """Mine (query, expected_path) eval pairs from your Claude Code transcripts.
 
@@ -1051,9 +1191,13 @@ def eval_mine(
     followed by Claude's first Read/Edit on a file, and emits a fixture
     compatible with `code-rag eval`. Free, real, in-distribution ground truth.
 
-    Paths are normalized against your configured `[paths].roots`, so the
-    fixture matches what's actually in your index.
+    Paths are normalized against your configured `[paths].roots`. With
+    `--filter-to-index` (default ON), the fixture is further filtered to only
+    include cases whose ground-truth paths exist in the current Chroma
+    collection — without this, mined cases referencing deleted files or
+    worktree clones depress recall artificially.
     """
+    from code_rag.eval.harness import EvalCase, filter_cases_to_paths
     from code_rag.eval.mine_transcripts import mine_all
     settings = ctx.obj["settings"]
     td = transcripts_dir or (Path.home() / ".claude" / "projects")
@@ -1062,14 +1206,48 @@ def eval_mine(
         sys.exit(2)
 
     pairs = mine_all(td, settings.all_roots(), max_pairs=max_pairs)
-    cases = [p.to_case() for p in pairs]
+    cases_dicts = [p.to_case() for p in pairs]
     if not include_source:
-        for c in cases:
+        for c in cases_dicts:
             c.pop("_source", None)
+    n_mined = len(cases_dicts)
+
+    if filter_to_index:
+        if not settings.index_meta_path.exists():
+            click.echo("WARN  no index yet — skipping --filter-to-index", err=True)
+        else:
+            from code_rag.models import IndexMeta
+            meta = IndexMeta.model_validate_json(
+                settings.index_meta_path.read_text("utf-8"),
+            )
+            vec = build_vector_store(settings)
+            try:
+                vec.open(meta)
+                # list_paths is concrete on ChromaVectorStore; skip silently
+                # if a future backend doesn't implement it.
+                indexed = vec.list_paths() if hasattr(vec, "list_paths") else None
+            finally:
+                with contextlib.suppress(Exception):
+                    vec.close()
+            if indexed is not None:
+                cases = [EvalCase.from_dict(c) for c in cases_dicts]
+                filtered = filter_cases_to_paths(cases, indexed)
+                kept_queries = {c.query for c in filtered}
+                cases_dicts = [c for c in cases_dicts if c["query"] in kept_queries]
+                # Also prune expected[] entries that aren't in the index, mirroring
+                # the EvalCase-level pruning so the on-disk fixture matches.
+                for c in cases_dicts:
+                    c["expected"] = [
+                        e for e in c["expected"] if e.get("path") in indexed
+                    ]
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(cases, indent=2, ensure_ascii=False), encoding="utf-8")
-    click.echo(f"mined {len(cases)} pairs from {td}", err=True)
+    output.write_text(json.dumps(cases_dicts, indent=2, ensure_ascii=False),
+                      encoding="utf-8")
+    click.echo(f"mined {n_mined} pairs from {td}", err=True)
+    if filter_to_index and n_mined != len(cases_dicts):
+        click.echo(f"filtered to {len(cases_dicts)} in-corpus pairs "
+                   f"({n_mined - len(cases_dicts)} dropped)", err=True)
     click.echo(f"wrote -> {output}", err=True)
 
 
