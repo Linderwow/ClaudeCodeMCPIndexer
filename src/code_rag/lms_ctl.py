@@ -165,24 +165,30 @@ class BootstrapResult:
     error: str | None = None
 
 
-# Phase 33: per-model VRAM-saving load settings.
+# Phase 33 + Phase 34 throughput tuning: per-model VRAM-saving load settings
+# balanced against parallel-throughput needs.
 #
-# LM Studio's defaults (Parallel=4, Context=max-supported) reserve enormous
-# KV cache up front — a Qwen3-Embedding-4B at default settings burns ~17 GB
+# LM Studio's stock defaults (Parallel=4, Context=max-supported) reserve
+# enormous KV cache up front — a Qwen3-Embedding-4B at stock burns ~17 GB
 # of VRAM JUST for KV pre-allocation we never use (embedder inputs are
-# almost always <2K tokens). Per-model overrides keep the GPU free for
+# almost always <2K tokens). Per-model overrides keep the GPU usable for
 # additional models (HyDE, reranker, etc).
 #
-# Heuristics (token-budget approach):
-#   Embedder       : context 4096, parallel 2  — code chunks rarely exceed 2K tokens.
-#                                                 Saves ~12 GB vs default.
-#   Chat reranker  : context 8192, parallel 2  — listwise prompts are ~6K chars ≈ 1.5K tokens.
-#   HyDE generator : context 8192, parallel 1  — hypothetical-doc generation is single-stream.
+# Phase 34 update: bumped embedder Parallel from 2 → 4 to match the
+# indexer's `parallel_workers=4` default. With 4 file-workers fanning out
+# embedding requests concurrently, having only 2 LM Studio slots means
+# half the workers wait. 4 slots ≈ 6-9 GB KV cache — fits comfortably
+# alongside the HyDE coder + cross-encoder.
 #
-# Models not in this map fall through to LM Studio defaults (which are
-# correct for unknown sizes; this map is purely an optimization).
+# Heuristics (token-budget approach):
+#   Embedder       : context 4096, parallel 4  — match indexer fan-out.
+#   Chat reranker  : context 8192, parallel 2  — listwise prompts ≈ 1.5K tokens.
+#   HyDE generator : context 8192, parallel 1  — hypothetical-doc gen is single-stream.
+#
+# Models not in this map fall through to LM Studio defaults (correct for
+# unknown sizes; this map is purely an optimization).
 _LMS_LOAD_SETTINGS: dict[str, tuple[int, int]] = {  # model_id -> (parallel, context)
-    "text-embedding-qwen3-embedding-4b": (2, 4096),
+    "text-embedding-qwen3-embedding-4b": (4, 4096),
     "qwen/qwen3-1.7b":                   (2, 8192),
     "qwen2.5-coder-7b-instruct":         (1, 8192),
     "qwen3-reranker-4b":                 (2, 8192),
