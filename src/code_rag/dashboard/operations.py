@@ -234,12 +234,26 @@ _LMS_API_TTL_S = 3.0
 
 def _lms_fetch_state(base_url: str) -> dict[str, Any]:
     """Hit /api/v0/models and return a parsed view, cached briefly. Falls back
-    to a server_up=False shape on any error so callers can render gracefully."""
+    to a server_up=False shape on any error so callers can render gracefully.
+
+    Pre-gated on _server_reachable() so when LM Studio is DOWN we exit in
+    ~50ms instead of paying the httpx IPv6→IPv4 fallback timeout (~4s on
+    Windows). Critical for the dashboard's 2s poll cadence — without this
+    gate, `get_status` blocks past the cadence whenever LM Studio is off,
+    making the UI feel unresponsive after Stop All.
+    """
     global _LMS_API_CACHE
     now = time.monotonic()
     ts, cached = _LMS_API_CACHE
     if now - ts < _LMS_API_TTL_S and ts > 0:
         return cached
+
+    parsed: dict[str, Any] = {"server_up": False, "available": [], "loaded": []}
+
+    # Fast TCP probe before HTTP — see _server_reachable docstring.
+    if not _server_reachable(base_url):
+        _LMS_API_CACHE = (now, parsed)
+        return parsed
 
     # /api/v0/models lives at the LM Studio HTTP server (same host:port as
     # /v1/...) but on the admin path. Strip "/v1" if base_url has it.
@@ -250,7 +264,6 @@ def _lms_fetch_state(base_url: str) -> dict[str, Any]:
         api_base = api_base[: -len("/v1/")]
     api_base = api_base.rstrip("/")
 
-    parsed: dict[str, Any] = {"server_up": False, "available": [], "loaded": []}
     try:
         r = httpx.get(f"{api_base}/api/v0/models", timeout=2.0)
         if r.status_code == 200:
@@ -612,10 +625,37 @@ def stop_lms_server() -> StepResult:
 
 
 def _server_reachable(base_url: str) -> bool:
+    """True iff the LM Studio HTTP server is accepting connections.
+
+    We do a raw TCP probe (IPv4) instead of an HTTP GET because:
+      1. httpx routes `localhost` through getaddrinfo, which on Windows
+         returns BOTH `::1` (IPv6) AND `127.0.0.1` (IPv4). httpx tries the
+         IPv6 first, eats the full timeout on connection-refused, then
+         falls back to IPv4 — paying the timeout TWICE per probe. With a
+         1.5s timeout that's 3s, and `get_status` is supposed to fit
+         under the dashboard's 2s poll cadence.
+      2. We don't actually need the HTTP roundtrip to know the server's up;
+         a TCP handshake is sufficient. /api/v0/models will provide the
+         richer state when reachable, gated by this probe.
+    Result: <50ms when down, <50ms when up.
+    """
+    import socket
+    import urllib.parse
+    parsed = urllib.parse.urlparse(base_url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    # Force IPv4 — `localhost` would otherwise try ::1 first.
+    if host in ("localhost", "::1"):
+        host = "127.0.0.1"
     try:
-        r = httpx.get(f"{base_url}/models", timeout=1.5)
-        return r.status_code == 200
-    except (httpx.HTTPError, OSError):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            # 250ms is generous for loopback — when LM Studio's listening
+            # the handshake completes in < 5ms; when it isn't, Windows
+            # firewall sometimes silently drops instead of REFUSE-ing, so
+            # we still want a budget. Net: 250ms when down, ~5ms when up.
+            s.settimeout(0.25)
+            return s.connect_ex((host, port)) == 0
+    except OSError:
         return False
 
 
