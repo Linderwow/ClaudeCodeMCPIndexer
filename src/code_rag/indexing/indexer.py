@@ -98,49 +98,101 @@ class Indexer:
     # ---- public -------------------------------------------------------------
 
     async def reindex_all(self) -> IndexStats:
-        """Phase 15: bounded-parallel pipeline.
+        """Phase 35: streaming producer/consumer pipeline.
 
-        Files are processed concurrently up to `settings.indexer.parallel_workers`
-        in flight at once. Each worker runs the per-file pipeline (read → hash-
-        skip check → chunk → embed → flush), with the per-store writes
-        serialized via `_store_lock` so Chroma/Kuzu/FTS see ordered upserts.
+        Pre-Phase-35, this method materialized every walker entry into an
+        `asyncio.create_task(_one(...))` via list comprehension *before*
+        any consumer ran. On a corpus with thousands of node_modules
+        siblings to skip, the SYNCHRONOUS walker enumeration blocked the
+        asyncio event loop for many minutes — long enough that the first
+        embedded chunk didn't land until the entire walk completed. That
+        broke the bge-code-v1 swap attempt and is generally a bad
+        architectural shape: chunking + embedding should overlap with
+        walking, not wait for it.
 
-        With workers=4 and a typical mix of NL+identifier-heavy LM Studio
-        embedding latency, this drops wall clock by roughly 3.5-4x vs the
-        previous strictly-sequential loop without inflating embedder load
-        beyond what LM Studio handles cleanly (see Phase D -- we proved 1
-        embedder slot at 488 ms/req is healthy; 4 in-flight requests fit).
+        The new shape is a bounded producer/consumer:
+
+            producer (in a thread)
+                walks the filesystem and pushes (path, lang, is_doc) onto
+                an asyncio.Queue. Sleeps when consumers can't keep up,
+                so the queue stays bounded.
+
+            consumers (parallel_workers of them)
+                each pull from the queue and run _process_file. Use the
+                same `_store_lock` so Chroma/FTS/Kuzu writes serialize.
+
+        The producer runs in `asyncio.to_thread` because Walker.iter_code
+        is a sync generator; running it on the event loop directly would
+        re-introduce the blocking we're fixing. asyncio.Queue is
+        thread-safe via `loop.call_soon_threadsafe` under the hood for
+        cross-thread put.
+
+        Throughput: chunks start landing within seconds of process start
+        instead of minutes. Total wall clock unchanged or better (no
+        difference in steady state; massive improvement in time-to-first-
+        chunk and time-to-progress-visible).
         """
         stats = IndexStats()
         t0 = time.monotonic()
         # Track every path the walker visits this pass. Anything in the index
         # that's NOT in this set represents a stale entry (file deleted, repo
         # removed, root unconfigured, glob now ignores it, file too big, etc.)
-        # and gets reaped after the walk finishes -- see `_gc_stale_paths`.
+        # and gets reaped after the walk finishes — see `_gc_stale_paths`.
         seen: set[str] = set()
-        seen_lock = asyncio.Lock()  # for the seen set across workers
-        # Single store-write lock: Chroma/Kuzu/FTS can't safely interleave
-        # writes from multiple coroutines on the same connection.
+        seen_lock = asyncio.Lock()
         self._store_lock = asyncio.Lock()
-        sem = asyncio.Semaphore(max(1, self._settings.indexer.parallel_workers))
+        n_workers = max(1, self._settings.indexer.parallel_workers)
 
-        async def _one(abs_path: Path, lang: str, is_doc: bool) -> None:
-            async with sem:
-                rel = await self._process_file(abs_path, lang, stats, is_doc=is_doc)
+        # Bounded queue: (abs_path: Path, lang: str, is_doc: bool) | None
+        # The None sentinel signals consumers that the producer is done —
+        # we put one per consumer so they all exit cleanly.
+        queue: asyncio.Queue[tuple[Path, str, bool] | None] = asyncio.Queue(
+            maxsize=n_workers * 4,
+        )
+        loop = asyncio.get_running_loop()
+
+        def _producer_sync() -> None:
+            """Walk the filesystem and push tuples onto the queue from
+            a worker thread. Uses run_coroutine_threadsafe to put items
+            on the asyncio.Queue from outside the loop thread."""
+            for _root, abs_path, lang in self._walker.iter_code():
+                fut = asyncio.run_coroutine_threadsafe(
+                    queue.put((abs_path, lang, False)), loop,
+                )
+                fut.result()  # block in the thread; ensures queue back-pressure.
+            for _root, abs_path, lang in self._walker.iter_docs():
+                fut = asyncio.run_coroutine_threadsafe(
+                    queue.put((abs_path, lang, True)), loop,
+                )
+                fut.result()
+            # One sentinel per consumer so each can `break` out of its loop.
+            for _ in range(n_workers):
+                fut = asyncio.run_coroutine_threadsafe(queue.put(None), loop)
+                fut.result()
+
+        async def _consumer() -> None:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    queue.task_done()
+                    return
+                abs_path, lang, is_doc = item
+                rel = await self._process_file(
+                    abs_path, lang, stats, is_doc=is_doc,
+                )
                 if rel is not None:
                     async with seen_lock:
                         seen.add(rel)
+                queue.task_done()
 
-        tasks: list[asyncio.Task[None]] = [
-            asyncio.create_task(_one(abs_path, lang, is_doc=False))
-            for _root, abs_path, lang in self._walker.iter_code()
+        # Run producer + N consumers concurrently.
+        producer_task = asyncio.create_task(asyncio.to_thread(_producer_sync))
+        consumer_tasks = [
+            asyncio.create_task(_consumer()) for _ in range(n_workers)
         ]
-        tasks.extend(
-            asyncio.create_task(_one(abs_path, lang, is_doc=True))
-            for _root, abs_path, lang in self._walker.iter_docs()
-        )
-        if tasks:
-            await asyncio.gather(*tasks)
+        await producer_task
+        await asyncio.gather(*consumer_tasks)
+
         await self._gc_stale_paths(seen, stats)
         stats.elapsed_s = time.monotonic() - t0
         log.info("indexer.done", **stats.as_dict())
