@@ -140,28 +140,57 @@ async def _run() -> int:
             log.exception("autostart.open_failed")
             return 3
 
-        # Transient graph ingest: open+close Kuzu per event so MCP/CLI readers
-        # can query the graph in the gaps (Kuzu 0.11 takes an exclusive OS
-        # file lock even in read-only mode).
         # File-hash registry: skip parse+embed when content unchanged (Phase 14).
         hashes = FileHashRegistry(settings.file_hashes_path)
         try:
             hashes.open()
         except Exception as e:
             _plain_log(autostart_log, f"file_hash open failed (non-fatal): {e}")
+
+        # Phase 35: graph ingestion is SKIPPED during the catch-up reindex.
+        #
+        # Why: GraphIngester.transient opens+closes Kuzu per file event.
+        # On a fresh full reindex (27K+ files), that's 54K+ open/close
+        # cycles. Kuzu's storage layout amplifies this badly — observed in
+        # production: graph.kz grew to 13.5 GB after only 2K files (~6 MB
+        # per file in graph alone, vs ~2 KB per chunk in FTS — 3000x more
+        # data). Per-file ingest then takes 2-3 minutes because each open
+        # has to load the giant DB. Net: catch-up reindex slows to a crawl
+        # (10-30 chunks/min instead of 500+).
+        #
+        # The graph is only used by the optional get_callers / get_callees
+        # MCP tools, which are not the critical path for retrieval. We let
+        # the watcher's STEADY-STATE per-file ingest populate the graph
+        # incrementally as users edit files — that path stays fast because
+        # graph.kz starts small.
+        #
+        # Users who need the full graph immediately should run
+        # `code-rag index` (CLI) — it uses GraphIngester(graph) non-
+        # transient mode which holds Kuzu open for the entire reindex,
+        # avoiding the open/close churn.
+        indexer_for_catchup = Indexer(
+            settings, embedder, vec,
+            lexical_store=lex,
+            graph_store=None,                 # ← skip graph during catch-up
+            file_hashes=hashes,
+        )
+
+        try:
+            await indexer_for_catchup.reindex_all()
+            _plain_log(autostart_log, "catch-up reindex done (graph skipped — incremental)")
+        except Exception as e:
+            _plain_log(autostart_log, f"catch-up reindex failed (non-fatal): {e}")
+            log.exception("autostart.catchup_failed")
+
+        # Hand off to a graph-enabled indexer for steady-state watch_forever.
+        # In transient mode this is fine: per-file events incur a small
+        # open/close cost on a small graph.kz.
         indexer = Indexer(
             settings, embedder, vec,
             lexical_store=lex,
             graph_store=GraphIngester.transient(settings.kuzu_dir),
             file_hashes=hashes,
         )
-
-        try:
-            await indexer.reindex_all()
-            _plain_log(autostart_log, "catch-up reindex done")
-        except Exception as e:
-            _plain_log(autostart_log, f"catch-up reindex failed (non-fatal): {e}")
-            log.exception("autostart.catchup_failed")
 
         # Phase 23: post-catch-up fsck with auto-repair. Cheap (a few
         # seconds), non-destructive (only safe repairs), and surfaces drift
