@@ -69,8 +69,21 @@ class MinedPair:
     source_session: str
     raw_path: str  # absolute path from the transcript, before normalization
 
-    def to_case(self) -> dict[str, object]:
-        return {
+    def to_case(self, *, with_tag: bool = True) -> dict[str, object]:
+        """Phase 35 (A2): emit a tagged case dict.
+
+        With `with_tag=True` (default), every mined case is auto-tagged
+        with one of the four intent labels from `classify_intent`:
+            * "identifier"        — bare symbol lookup ("OnBarUpdate")
+            * "definition_lookup" — short find/where queries with codey words
+            * "natural_language"  — pure prose questions
+            * "mixed"             — long prose + identifiers
+
+        Tagging is deterministic + heuristic (no LLM, no curation).
+        Per-tag eval breakdowns let us see which query types regress
+        when we change embedders / rerankers / rewriters.
+        """
+        out: dict[str, object] = {
             "query": self.query,
             "expected": [{"path": self.expected_path}],
             "_source": {
@@ -78,6 +91,11 @@ class MinedPair:
                 "raw_path": self.raw_path,
             },
         }
+        if with_tag:
+            # Lazy import: keeps this module loadable without code_rag.retrieval.
+            from code_rag.retrieval.hyde import classify_intent
+            out["tag"] = classify_intent(self.query)
+        return out
 
 
 # ---- transcript parsing ----------------------------------------------------

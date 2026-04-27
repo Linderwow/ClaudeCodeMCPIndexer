@@ -5,10 +5,56 @@ import json
 from pathlib import Path
 
 from code_rag.eval.mine_transcripts import (
+    MinedPair,
     _is_codey_question,
     _normalize_path,
     mine_session,
 )
+
+
+# ---- Phase 35 (A2): auto-tagging on mined cases ---------------------------
+
+
+def test_to_case_auto_tags_identifier_query() -> None:
+    """Bare symbol queries get the 'identifier' tag automatically."""
+    p = MinedPair(
+        query="OnBarUpdate", expected_path="MNQAlpha.cs",
+        source_session="s", raw_path="abs",
+    )
+    out = p.to_case()
+    assert out["tag"] == "identifier"
+
+
+def test_to_case_auto_tags_natural_language_query() -> None:
+    p = MinedPair(
+        query="how does the trading strategy decide when to enter positions",
+        expected_path="MNQAlpha.cs",
+        source_session="s", raw_path="abs",
+    )
+    out = p.to_case()
+    # Long prose with no codey identifiers → natural_language.
+    assert out["tag"] == "natural_language"
+
+
+def test_to_case_auto_tags_mixed_query() -> None:
+    """Long prose containing identifiers → 'mixed'."""
+    p = MinedPair(
+        query="where does OnBarUpdate handle the gap_fill_strategy logic",
+        expected_path="MNQAlpha.cs",
+        source_session="s", raw_path="abs",
+    )
+    out = p.to_case()
+    assert out["tag"] == "mixed"
+
+
+def test_to_case_with_tag_false_omits_tag() -> None:
+    """Caller can disable auto-tagging if they want untagged output."""
+    p = MinedPair(
+        query="OnBarUpdate", expected_path="MNQAlpha.cs",
+        source_session="s", raw_path="abs",
+    )
+    out = p.to_case(with_tag=False)
+    assert "tag" not in out
 
 # ---- heuristics -------------------------------------------------------------
 

@@ -818,6 +818,109 @@ def eval(
     sys.exit(asyncio.run(_run()))
 
 
+@main.command("rerank-ablate")
+@click.option("--fixture", type=click.Path(exists=True, path_type=Path), default=None,
+              help="Eval fixture. Default: src/code_rag/eval/fixtures/manual_eval.json")
+@click.option("--rerankers", "rerankers_csv", default="lm_chat,cross_encoder,noop",
+              show_default=True,
+              help="Comma-separated reranker kinds to A/B test.")
+@click.option("--json-out", "json_out", type=click.Path(path_type=Path), default=None,
+              help="Write per-reranker report JSON here.")
+@click.pass_context
+def rerank_ablate(
+    ctx: click.Context, fixture: Path | None, rerankers_csv: str,
+    json_out: Path | None,
+) -> None:
+    """Phase 35 (C5): A/B-test multiple reranker backends side-by-side.
+
+    Loads each reranker in turn, runs the SAME eval fixture against each,
+    reports the metric matrix so you can pick the best one with measurement
+    instead of guesswork.
+
+    Each reranker is built fresh per run, so previous-reranker state can't
+    leak between trials. The shared embedder/store stays loaded for speed.
+
+    Useful right before swapping reranker.kind in config.toml — you'll see
+    exactly what the per-metric tradeoff is.
+
+    Example:
+        code-rag rerank-ablate --rerankers cross_encoder,lm_chat,noop
+    """
+    settings = ctx.obj["settings"]
+    from code_rag.eval.harness import load_cases, run_eval
+    from code_rag.factory import build_reranker
+    repo_root = Path(__file__).resolve().parents[2]
+    fixture_path = fixture or (
+        repo_root / "src" / "code_rag" / "eval" / "fixtures" / "manual_eval.json"
+    )
+    rerankers = [k.strip() for k in rerankers_csv.split(",") if k.strip()]
+
+    async def _run() -> int:
+        embedder = build_embedder(settings)
+        vec = build_vector_store(settings)
+        lex = build_lexical_store(settings)
+        if not settings.index_meta_path.exists():
+            click.echo("FAIL  no index — run `code-rag index` first", err=True)
+            return 1
+        await embedder.health()
+        meta = ChromaVectorStore.build_meta(
+            embedder_kind=settings.embedder.kind,
+            embedder_model=embedder.model,
+            embedder_dim=embedder.dim,
+        )
+        vec.open(meta)
+        lex.open()
+        results: dict[str, dict[str, float]] = {}
+        try:
+            cases = load_cases(fixture_path)
+            for kind in rerankers:
+                # Build a fresh reranker for this kind by overriding the
+                # config's reranker.kind. We don't mutate the on-disk
+                # config — only the in-memory settings clone.
+                from copy import deepcopy
+                local_settings = deepcopy(settings)
+                local_settings.reranker.kind = kind  # type: ignore[assignment]
+                try:
+                    rer = build_reranker(local_settings)
+                except Exception as e:
+                    click.echo(f"  [{kind}] build failed: {e}", err=True)
+                    results[kind] = {"error": str(e)}  # type: ignore[dict-item]
+                    continue
+                try:
+                    await rer.health()
+                except Exception as e:
+                    click.echo(f"  [{kind}] health failed: {e}", err=True)
+                    results[kind] = {"error": f"health: {e}"}  # type: ignore[dict-item]
+                    continue
+                searcher = HybridSearcher(embedder, vec, lex, rer)
+                report = await run_eval(
+                    cases, searcher, top_k=10,
+                    rerank_in=settings.reranker.top_k_in,
+                    label=f"ablate-{kind}",
+                )
+                summary = report.summary()
+                results[kind] = summary
+                click.echo(
+                    f"  {kind:18s} R@1={summary['recall@1']:.3f}  "
+                    f"R@3={summary['recall@3']:.3f}  R@10={summary['recall@10']:.3f}  "
+                    f"MRR={summary['mrr']:.3f}  p50={summary['p50_latency_ms']:.0f}ms"
+                )
+                # Reranker-specific cleanup.
+                aclose = getattr(rer, "aclose", None)
+                if callable(aclose):
+                    await aclose()
+            if json_out:
+                json_out.write_text(json.dumps(results, indent=2), encoding="utf-8")
+                click.echo(f"\n[wrote {json_out}]", err=True)
+            return 0
+        finally:
+            vec.close()
+            lex.close()
+            await embedder.aclose()
+
+    sys.exit(asyncio.run(_run()))
+
+
 @main.command("reap")
 @click.option("--kill", is_flag=True,
               help="Actually terminate orphans. Without this flag we DRY-RUN.")
