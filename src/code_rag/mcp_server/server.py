@@ -702,5 +702,17 @@ async def run_stdio(settings: Settings) -> None:
 
 
 def main_entry() -> None:
-    """Entry point for `code-rag mcp` CLI subcommand."""
+    """Entry point for `code-rag mcp` CLI subcommand.
+
+    Phase 32: starts a parent-death watchdog so this MCP subprocess exits
+    cleanly when Claude Code (our parent) dies. Prevents orphan
+    accumulation across restarts.
+    """
+    from code_rag.util.proc_hygiene import start_parent_death_watchdog
+    # Capture parent PID at process start. On Windows venv stubs we are the
+    # anaconda child of the .venv launcher, but the watchdog walks ancestors
+    # of `os.getppid()` correctly because if the venv stub dies (which it
+    # does when claude.exe dies), our PPID becomes orphaned and the
+    # `is_process_alive` probe returns False.
+    start_parent_death_watchdog()
     asyncio.run(run_stdio(load_settings()))

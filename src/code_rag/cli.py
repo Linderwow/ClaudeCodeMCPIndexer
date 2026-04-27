@@ -523,10 +523,22 @@ def dashboard(ctx: click.Context, host: str, port: int, no_browser: bool) -> Non
         sys.stdout = log_file
         sys.stderr = log_file
 
-    from code_rag.dashboard.server import serve
-    click.echo(f"code-rag dashboard -> http://{host}:{port}/")
-    click.echo("Ctrl-C to stop (the LM Studio + watcher stack keeps running).")
-    serve(host=host, port=port, open_browser=not no_browser)
+    # Phase 32: refuse to start a second dashboard instance. Task Scheduler's
+    # IgnoreNew policy covers same-task spawns, but a manual `schtasks /Run`
+    # or a venv-launcher quirk can still produce duplicates.
+    from code_rag.util.proc_hygiene import SingletonLock
+    lock_path = settings.paths.data_dir / "dashboard.lock"
+    with SingletonLock(lock_path) as lock:
+        if not lock.acquired:
+            click.echo(
+                f"another dashboard instance is already running "
+                f"(see {lock_path}); exiting.", err=True,
+            )
+            sys.exit(0)
+        from code_rag.dashboard.server import serve
+        click.echo(f"code-rag dashboard -> http://{host}:{port}/")
+        click.echo("Ctrl-C to stop (the LM Studio + watcher stack keeps running).")
+        serve(host=host, port=port, open_browser=not no_browser)
 
 
 @main.command()
@@ -564,8 +576,21 @@ def watch(ctx: click.Context) -> None:
 
     Debounced (config.toml [watcher].debounce_ms). Safe to run unattended --
     designed to be invoked at login by Task Scheduler (see docs/autostart.md).
+
+    Phase 32: refuses to start a second watcher (singleton lockfile). Two
+    watchers indexing the same Chroma collection at once would race on
+    upsert/delete; the lock makes that physically impossible.
     """
     settings = ctx.obj["settings"]
+    from code_rag.util.proc_hygiene import SingletonLock
+    lock_path = settings.paths.data_dir / "watcher.lock"
+    lock = SingletonLock(lock_path).__enter__()
+    if not lock.acquired:
+        click.echo(
+            f"another watcher instance is already running "
+            f"(see {lock_path}); exiting.", err=True,
+        )
+        sys.exit(0)
 
     async def _run() -> int:
         embedder = build_embedder(settings)
@@ -611,6 +636,9 @@ def watch(ctx: click.Context) -> None:
     except KeyboardInterrupt:
         click.echo("watcher stopped", err=True)
         sys.exit(0)
+    finally:
+        # Release the singleton lock so the next watcher start can acquire.
+        lock.__exit__(None, None, None)
 
 
 @main.command()
@@ -792,6 +820,51 @@ def eval(
                 await reranker.aclose()
 
     sys.exit(asyncio.run(_run()))
+
+
+@main.command("reap")
+@click.option("--kill", is_flag=True,
+              help="Actually terminate orphans. Without this flag we DRY-RUN.")
+@click.option("--quiet", is_flag=True,
+              help="Suppress per-process output; print only the summary.")
+@click.pass_context
+def reap_cmd(ctx: click.Context, kill: bool, quiet: bool) -> None:
+    """Phase 32: find (and optionally kill) orphaned code_rag processes.
+
+    "Orphaned" = a code_rag MCP / dashboard / watcher process whose
+    legitimate ancestor (claude.exe for MCP, Task Scheduler for the others)
+    is no longer alive. These accumulate over time as Claude Code sessions
+    crash or restart without sending a clean shutdown signal to their MCP
+    subprocess.
+
+    Without `--kill` this is a DRY-RUN: it lists what WOULD be reaped so
+    you can sanity-check before pulling the trigger.
+
+    Designed to be safe to run on a schedule (e.g. every 10 min). Won't
+    touch live MCP servers attached to running Claude Code instances; only
+    reaps subprocesses whose parent has died.
+    """
+    _ = ctx
+    from code_rag.util.proc_hygiene import reap_orphans
+    report = reap_orphans(kill=kill)
+    n_alive = len(report["alive"])
+    n_orphans = len(report["orphans"])
+    n_killed = len(report["killed"])
+    if not quiet:
+        if n_orphans == 0:
+            click.echo(f"clean: {n_alive} live code_rag process(es), 0 orphans")
+        else:
+            mode = "KILLED" if kill else "WOULD KILL"
+            click.echo(f"{n_orphans} orphan(s) found ({mode}):")
+            for p in report["orphans"]:
+                click.echo(f"  pid={p['pid']:>6}  kind={p['kind'] or '?':<10s}  reason={p['reason']}")
+                click.echo(f"          cmd: {p['cmdline_preview']}")
+            click.echo(f"\nlive (kept): {n_alive}")
+            for p in report["alive"]:
+                click.echo(f"  pid={p['pid']:>6}  kind={p['kind'] or '?':<10s}")
+    if kill:
+        click.echo(f"\nkilled: {n_killed}/{n_orphans}")
+    sys.exit(0 if (n_orphans == 0 or kill) else 1)
 
 
 @main.command("eval-gate")

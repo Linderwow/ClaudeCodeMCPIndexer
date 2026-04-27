@@ -68,6 +68,20 @@ async def _run() -> int:
     autostart_log = settings.paths.log_dir / "autostart.log"
     configure(settings.paths.log_dir, level="INFO")
 
+    # Phase 32: singleton lock — refuse to run a second autostart bootstrap.
+    # Without this, a second logon trigger or a manual `schtasks /Run` while
+    # the first instance is still alive produces two watchers competing on
+    # the same Chroma collection. We intentionally re-use the watcher.lock
+    # path so the autostart bootstrap and a manually-launched `code-rag watch`
+    # mutually exclude.
+    from code_rag.util.proc_hygiene import SingletonLock
+    lock_path = settings.paths.data_dir / "watcher.lock"
+    lock = SingletonLock(lock_path).__enter__()
+    if not lock.acquired:
+        _plain_log(autostart_log,
+                   f"another watcher instance is alive (lockfile {lock_path}); exiting")
+        return 0
+
     _plain_log(autostart_log, "bootstrap starting")
     log.info("autostart.begin", python=sys.executable)
 
@@ -176,6 +190,9 @@ async def _run() -> int:
         lex.close()
         with contextlib.suppress(Exception):
             hashes.close()
+        # Release the Phase 32 singleton lock.
+        with contextlib.suppress(Exception):
+            lock.__exit__(None, None, None)
 
 
 def main() -> None:
