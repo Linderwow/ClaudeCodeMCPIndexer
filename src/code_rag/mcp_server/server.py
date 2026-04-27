@@ -281,6 +281,18 @@ class ServerResources:
         self.lex.open()
         self.graph.open()
 
+        # Phase 35 (D1): pre-warm the reranker. With kind="cross_encoder"
+        # the first search query would otherwise pay the model's lazy-load
+        # cost (~3s warm, ~16s cold) — a P99 outlier that catches users on
+        # their very first MCP tool call. health() forces the model into
+        # memory at server-start time. Best-effort: a reranker init failure
+        # falls back to no-op rerank rather than blocking the server.
+        try:
+            await self.reranker.health()
+        except Exception as e:
+            log.warning("mcp.reranker_health_failed",
+                        err=f"{type(e).__name__}: {e}")
+
         # Phase 19: HyDE retriever plan. Built lazily so the import doesn't
         # fail when the user doesn't have a chat-completion-capable model
         # loaded in LM Studio. The plan internally probes /v1/models on
