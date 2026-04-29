@@ -12,11 +12,12 @@ from code_rag.chunking.treesitter import TreeSitterChunker
 from code_rag.config import Settings
 from code_rag.indexing.file_hash import FileHashRegistry
 from code_rag.indexing.summary import synthesize_file_summary
-from code_rag.indexing.walker import CODE_EXT, DOC_EXT, Walker
+from code_rag.indexing.walker import CODE_EXT, DOC_EXT, MAX_FILE_BYTES, Walker
 from code_rag.interfaces.embedder import Embedder
 from code_rag.interfaces.vector_store import VectorStore
 from code_rag.logging import get
 from code_rag.models import Chunk
+from code_rag.util.globs import matches_any
 
 log = get(__name__)
 
@@ -236,10 +237,40 @@ class Indexer:
         log.info("indexer.gc.done", paths_gc=stats.paths_gc)
 
     async def reindex_path(self, path: Path) -> IndexStats:
-        """Reindex a single file or a single subtree."""
+        """Reindex a single file or a single subtree.
+
+        Three branches:
+          * target doesn't exist  -> treat as delete (purge any prior chunks)
+          * target is a file      -> process just that file
+          * target is a directory -> walk INSIDE target only (NOT the whole
+            indexed tree) so subtree reindex stays O(files-under-target),
+            not O(all-files-in-config-roots).
+
+        The "doesn't exist" branch is critical for the live watcher: editors
+        often produce transient events where the file briefly disappears
+        between save+rename. Without this short-circuit, every such phantom
+        event used to fall into the directory branch and walk the entire
+        12k+-file index for nothing — eating 11+ minutes of CPU per event
+        and stacking up under the watcher's serial drain loop.
+        """
         stats = IndexStats()
         t0 = time.monotonic()
         target = path.resolve()
+
+        # 1) Target gone — purge any chunks attributable to this path and bail.
+        if not target.exists():
+            rel_guess = self._best_rel_path(target)
+            if rel_guess is not None:
+                try:
+                    await self.remove_path(rel_guess)
+                    stats.paths_purged += 1
+                except Exception as e:
+                    stats.errors.append(f"remove_missing:{rel_guess}:{e}")
+            stats.elapsed_s = time.monotonic() - t0
+            log.info("indexer.reindex_path.done", target=str(target), **stats.as_dict())
+            return stats
+
+        # 2) Single file — fast path, no walk.
         if target.is_file():
             suffix = target.suffix.lower()
             if suffix in CODE_EXT:
@@ -248,24 +279,53 @@ class Indexer:
                 await self._process_file(target, DOC_EXT[suffix], stats, is_doc=True)
             else:
                 stats.files_skipped += 1
-        else:
-            for _root, abs_path, lang in self._walker.iter_code():
-                try:
-                    if not abs_path.resolve().is_relative_to(target):
-                        continue
-                except ValueError:
+            stats.elapsed_s = time.monotonic() - t0
+            log.info("indexer.reindex_path.done", target=str(target), **stats.as_dict())
+            return stats
+
+        # 3) Subtree walk — bounded to TARGET ONLY (not all roots). We still
+        #    apply ignore globs and size caps via the walker's helpers.
+        ignored = self._settings.ignore.globs
+        for fp in target.rglob("*"):
+            try:
+                if not fp.is_file():
                     continue
-                await self._process_file(abs_path, lang, stats, is_doc=False)
-            for _root, abs_path, lang in self._walker.iter_docs():
-                try:
-                    if not abs_path.resolve().is_relative_to(target):
-                        continue
-                except ValueError:
+            except OSError:
+                continue
+            if matches_any(fp, ignored):
+                continue
+            try:
+                if fp.stat().st_size > MAX_FILE_BYTES:
                     continue
-                await self._process_file(abs_path, lang, stats, is_doc=True)
+            except OSError:
+                continue
+            suffix = fp.suffix.lower()
+            if suffix in CODE_EXT:
+                await self._process_file(fp, CODE_EXT[suffix], stats, is_doc=False)
+            elif suffix in DOC_EXT:
+                await self._process_file(fp, DOC_EXT[suffix], stats, is_doc=True)
+
         stats.elapsed_s = time.monotonic() - t0
         log.info("indexer.reindex_path.done", target=str(target), **stats.as_dict())
         return stats
+
+    def _best_rel_path(self, abs_path: Path) -> str | None:
+        """Resolve `abs_path` to its index-relative form (relative to whichever
+        configured/dynamic root contains it). Returns None if outside every
+        root — in which case we have no chunks to purge."""
+        ap = abs_path  # may not exist on disk; just compare on the path string
+        with contextlib.suppress(OSError):
+            ap = abs_path.resolve()
+        for r in self._settings.all_roots():
+            try:
+                rr = r.resolve()
+            except OSError:
+                continue
+            try:
+                return ap.relative_to(rr).as_posix()
+            except ValueError:
+                continue
+        return None
 
     async def remove_path(self, rel_path: str) -> None:
         """Purge all chunks for a file that no longer exists (watcher delete event)."""
