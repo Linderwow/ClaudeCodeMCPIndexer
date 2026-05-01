@@ -37,7 +37,9 @@ default model on CPU.
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 from code_rag.interfaces.reranker import Reranker
@@ -45,6 +47,25 @@ from code_rag.logging import get
 from code_rag.models import SearchHit
 
 log = get(__name__)
+
+
+def _model_is_cached(model_name: str) -> bool:
+    """Return True iff `model_name` has at least one snapshot in the local HF
+    cache. Used to gate offline-mode: if the model is already on disk we want
+    to skip every HEAD probe to huggingface.co, which on machines with a
+    broken SSL trust store burns 30+ seconds on retries before falling back
+    to cache (long enough to blow Claude Code's MCP handshake timeout)."""
+    cache_root = Path(
+        os.environ.get("HF_HOME", "")
+        or os.environ.get("HUGGINGFACE_HUB_CACHE", "")
+        or (Path.home() / ".cache" / "huggingface" / "hub").as_posix(),
+    )
+    # HF cache layout: <root>/models--<org>--<name>/snapshots/<sha>/
+    folder = cache_root / f"models--{model_name.replace('/', '--')}" / "snapshots"
+    try:
+        return folder.is_dir() and any(folder.iterdir())
+    except OSError:
+        return False
 
 
 class CrossEncoderReranker(Reranker):
@@ -66,6 +87,16 @@ class CrossEncoderReranker(Reranker):
         max_chars_per_doc: int = 600,
         device: str | None = None,
     ) -> None:
+        # Force offline mode BEFORE importing sentence_transformers if the
+        # model is already in the HF cache. On a machine with a broken SSL
+        # trust store the loader otherwise burns 30+ seconds retrying HEAD
+        # probes to huggingface.co — long enough to time out Claude Code's
+        # MCP handshake. Direct assignment (not setdefault) so a stale
+        # `HF_HUB_OFFLINE=` empty value from a parent process can't override.
+        if _model_is_cached(model):
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
         # Verify the dep is importable up front so the user gets a clear
         # error at config-load time, not at first query.
         try:
@@ -111,6 +142,8 @@ class CrossEncoderReranker(Reranker):
 
     def _load_model(self) -> Any:
         # Imported here so the module-level import stays cheap.
+        # Offline-mode env vars are already set in __init__ if the model is
+        # cached locally — see the comment there for rationale.
         from sentence_transformers import CrossEncoder
         return CrossEncoder(self._model_name, device=self._device)
 
