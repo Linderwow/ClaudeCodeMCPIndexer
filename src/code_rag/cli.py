@@ -1150,11 +1150,19 @@ def reap_cmd(ctx: click.Context, kill: bool, quiet: bool) -> None:
         click.echo(f"  killed: {n_killed}/{n_orphans}")
 
     # 2. Watcher heartbeat (Phase 36-C).
+    # Phase 39: respect the user's "Stop All" intent. If `data/.stopped`
+    # exists, the watcher is dead BY DESIGN — leave it alone. Otherwise
+    # we'd defeat Stop All within 10 min on the next reaper cycle.
+    from code_rag.util.stop_marker import is_intentionally_stopped
+    stopped = is_intentionally_stopped(settings.paths.data_dir)
+
     hb_path = settings.paths.data_dir / "watcher.heartbeat"
     age = watcher_heartbeat_age_s(hb_path)
     alive = is_watcher_alive()
     watcher_action = "ok"
-    if not alive:
+    if stopped and not alive:
+        watcher_action = "dead by user intent (data/.stopped present) — NOT respawning"
+    elif not alive:
         watcher_action = "dead — respawning"
         if kill:
             respawn_watcher_via_schtasks()
@@ -1163,18 +1171,30 @@ def reap_cmd(ctx: click.Context, kill: bool, quiet: bool) -> None:
         # don't respawn yet, just note.
         watcher_action = "alive but no heartbeat yet (fresh start?)"
     elif age > 120:
-        watcher_action = f"alive but heartbeat stale ({age:.0f}s) — wedged, killing+respawning"
-        if kill:
-            from code_rag.util.proc_hygiene import (
-                kill_pid,
-                list_code_rag_processes,
-            )
-            for p in list_code_rag_processes():
-                if p.kind in ("watcher", "watch_cli"):
-                    kill_pid(p.pid)
-            import time as _t
-            _t.sleep(2)
-            respawn_watcher_via_schtasks()
+        if stopped:
+            watcher_action = (f"alive but heartbeat stale ({age:.0f}s); "
+                              "user intent says stay stopped — killing only")
+            if kill:
+                from code_rag.util.proc_hygiene import (
+                    kill_pid,
+                    list_code_rag_processes,
+                )
+                for p in list_code_rag_processes():
+                    if p.kind in ("watcher", "watch_cli"):
+                        kill_pid(p.pid)
+        else:
+            watcher_action = f"alive but heartbeat stale ({age:.0f}s) — wedged, killing+respawning"
+            if kill:
+                from code_rag.util.proc_hygiene import (
+                    kill_pid,
+                    list_code_rag_processes,
+                )
+                for p in list_code_rag_processes():
+                    if p.kind in ("watcher", "watch_cli"):
+                        kill_pid(p.pid)
+                import time as _t
+                _t.sleep(2)
+                respawn_watcher_via_schtasks()
     if not quiet:
         click.echo(f"watcher: {watcher_action}")
 

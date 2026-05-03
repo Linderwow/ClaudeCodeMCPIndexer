@@ -85,6 +85,21 @@ async def _run() -> int:
     _plain_log(autostart_log, "bootstrap starting")
     log.info("autostart.begin", python=sys.executable)
 
+    # Phase 39: clear any leftover Stop All intent marker. Semantics: the
+    # user said "stay stopped until I hit Start All OR restart the PC".
+    # The autostart task fires `AtLogon`, so a PC restart -> we run -> we
+    # delete the marker before continuing. Without this, the watcher
+    # would refuse to come back even after a reboot.
+    from code_rag.util.stop_marker import (
+        clear_intentionally_stopped,
+        is_intentionally_stopped,
+    )
+    if (is_intentionally_stopped(settings.paths.data_dir)
+            and clear_intentionally_stopped(settings.paths.data_dir,
+                                            reason="autostart_bootstrap.logon")):
+        _plain_log(autostart_log,
+                   "cleared stale Stop All marker (PC restart resumes service)")
+
     # 2) Ensure LM Studio is up with the embedder loaded.
     # Pre-load any auxiliary chat/rerank models so the first MCP query after
     # boot doesn't pay a 5-10s JIT-load penalty.

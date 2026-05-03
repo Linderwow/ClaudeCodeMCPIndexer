@@ -411,8 +411,23 @@ def start_all(settings: Settings) -> CompositeResult:
 
     Order matters: LM Studio first (the watcher needs the embedder), then
     pre-load models, then the Task Scheduler watcher.
+
+    Phase 39: also clears the `data/.stopped` intent marker so the reaper
+    resumes its normal auto-respawn-on-crash behavior.
     """
     res = CompositeResult()
+    # Phase 39: clear stop intent BEFORE starting anything else, so the
+    # reaper (or daily redeploy) doesn't see a transient state where
+    # the watcher is alive but the marker still says "stay stopped".
+    from code_rag.util.stop_marker import clear_intentionally_stopped
+    cleared = clear_intentionally_stopped(settings.paths.data_dir,
+                                          reason="dashboard.start_all")
+    res.add(StepResult(
+        "clear_stop_marker", cleared,
+        "stop intent cleared" if cleared else "could not clear marker",
+        duration_ms=0.0,
+    ))
+
     res.add(start_lms_server(settings))
     if not res.steps[-1].ok:
         return res
@@ -510,11 +525,32 @@ def stop_all(settings: Settings, *, stop_lm_studio: bool = True) -> CompositeRes
     only stopped for THIS session — it'll fire again on next logon (the
     user's hands-off-on-reboot requirement).
 
+    Phase 39: also writes a `data/.stopped` intent marker that the
+    Phase 36-C reaper and Phase 37-L daily redeploy task respect. With
+    the marker in place, the watcher STAYS dead until either the user
+    hits Start All (which deletes the marker) or the PC reboots (the
+    autostart bootstrap deletes the marker on logon). Without this, the
+    reaper would see `is_watcher_alive() == False` and respawn within
+    10 minutes, defeating Stop All's intent.
+
     Pass `stop_lm_studio=False` to keep the server up (e.g. for the
     granular-stop case where the dashboard's per-card buttons did the work).
     """
-    _ = settings
     res = CompositeResult()
+    # Phase 39: write the intent marker FIRST so any concurrent reaper
+    # that's mid-cycle sees it before we kill the watcher (eliminating a
+    # tiny race where the reaper could observe "watcher dead" before the
+    # marker exists and respawn).
+    from code_rag.util.stop_marker import mark_intentionally_stopped
+    marked = mark_intentionally_stopped(settings.paths.data_dir,
+                                        reason="dashboard.stop_all")
+    res.add(StepResult(
+        "set_stop_marker", marked,
+        "stop intent recorded (reaper + redeploy will leave watcher alone)"
+        if marked
+        else "WARNING: marker write failed; reaper may respawn watcher",
+        duration_ms=0.0,
+    ))
     res.add(stop_watcher_task())
     res.add(unload_all_models())
     if stop_lm_studio:

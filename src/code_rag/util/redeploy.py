@@ -284,6 +284,22 @@ def redeploy(
     p = plan(repo_root, data_dir, force=force)
     result = RedeployResult(plan=p, pulled=pulled, pull_output=pull_output)
 
+    # Phase 39: if the user has explicitly hit Stop All, do NOT kick the
+    # watcher/dashboard tasks back to life — that would defeat the
+    # intentional stop. Still perform the rev compare so the next regular
+    # redeploy (post-Start-All or post-reboot) sees the up-to-date stamp
+    # and doesn't re-fire on stale state.
+    from code_rag.util.stop_marker import is_intentionally_stopped
+    if is_intentionally_stopped(data_dir) and not force:
+        log.info("redeploy.skip_intentionally_stopped",
+                 reason="data/.stopped present — user said stay stopped")
+        # Stamp the rev anyway so future redeploys don't keep claiming
+        # "rev changed" against an old marker — only stamp if rev moved.
+        if p.needed and p.current_rev:
+            result.stamped = write_deployed_rev(data_dir, p.current_rev)
+        result.elapsed_s = time.monotonic() - t0
+        return result
+
     if not p.needed or dry_run:
         result.elapsed_s = time.monotonic() - t0
         if dry_run:
