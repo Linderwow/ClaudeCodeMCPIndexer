@@ -205,8 +205,42 @@ def _as_str(p: str | bytes) -> str:
 
 async def watch_forever(settings: Settings, indexer: Indexer) -> None:
     """Block until cancelled. Swallowed CancelledError at the top so shutdown
-    is quiet when Ctrl-C is pressed."""
+    is quiet when Ctrl-C is pressed.
+
+    Phase 36-C: spawn a heartbeat writer alongside the watcher. The reaper
+    task uses heartbeat freshness to detect "watcher process alive but
+    deadlocked" — without this signal we couldn't distinguish a healthy
+    idle watcher (no events) from a stuck one (event loop wedged).
+    """
     watcher = LiveWatcher(settings, indexer)
+    hb_task = asyncio.create_task(_heartbeat_writer(settings))
     task = asyncio.create_task(watcher.run())
-    with contextlib.suppress(asyncio.CancelledError):
-        await task
+    try:
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    finally:
+        hb_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await hb_task
+
+
+async def _heartbeat_writer(settings: Settings) -> None:
+    """Touch `data/watcher.heartbeat` every 30 seconds.
+
+    The reaper's freshness check uses mtime; we don't bother with content.
+    A wedged event loop CAN'T touch the file (the writer task won't run
+    if the loop is stuck), so a stale heartbeat reliably indicates
+    "watcher event loop is wedged" — distinct from "watcher process is
+    dead" (no file at all) and "watcher healthy" (mtime within ~60s).
+    """
+    hb_path = settings.paths.data_dir / "watcher.heartbeat"
+    while True:
+        try:
+            hb_path.touch(exist_ok=True)
+            hb_path.write_text(str(int(asyncio.get_event_loop().time())),
+                               encoding="utf-8")
+        except OSError as e:
+            # Disk full / permission error — log but don't kill the
+            # heartbeat loop; the reaper will see staleness and act.
+            log.warning("watcher.heartbeat_write_failed", err=str(e))
+        await asyncio.sleep(30)

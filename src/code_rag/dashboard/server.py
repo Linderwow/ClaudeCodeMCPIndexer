@@ -65,6 +65,134 @@ async def status(_req: Request) -> JSONResponse:
     return JSONResponse(ops.get_status(s))
 
 
+async def health(_req: Request) -> JSONResponse:
+    """Phase 36-E: real health probe (not just "process running").
+
+    Returns a structured score with per-component status:
+
+        {
+          "overall":  "ok" | "degraded" | "critical"
+          "checks": {
+              "lm_studio":         {"ok": bool, "detail": "..."}
+              "watcher_alive":     {"ok": bool, "detail": "pid=N age_min=M"}
+              "watcher_heartbeat": {"ok": bool, "detail": "age_s=N"}
+              "chroma":            {"ok": bool, "detail": "count=N elapsed_ms=M"}
+              "vram":              {"ok": bool, "detail": "X / Y GB (Z%)"}
+              "lms_duplicates":    {"ok": bool, "detail": "no aliases" | ":N alias..."}
+          }
+        }
+
+    Each check is fast (<2s). Use this from the dashboard for true
+    yellow/red badges instead of just "process running" green.
+
+    "critical" iff any of: lm_studio down, watcher dead, chroma stuck.
+    "degraded" iff: heartbeat stale, vram > 90%, duplicate aliases.
+    """
+    s = _settings_or_500()
+    if isinstance(s, JSONResponse):
+        return s
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    from code_rag.chroma_watchdog import probe_chroma
+    from code_rag.util.proc_hygiene import (
+        is_watcher_alive,
+        list_code_rag_processes,
+        watcher_heartbeat_age_s,
+    )
+
+    checks: dict[str, dict[str, Any]] = {}
+
+    # --- LM Studio ---
+    base = s.embedder.base_url
+    try:
+        r = ops._lms_status(s)
+        lms_ok = bool(r.get("server_up"))
+        loaded = [m["id"] for m in r.get("models_loaded", [])]
+        checks["lm_studio"] = {
+            "ok": lms_ok,
+            "detail": (f"up; {len(loaded)} model(s) loaded" if lms_ok
+                       else f"down at {base}"),
+        }
+    except Exception as e:
+        checks["lm_studio"] = {"ok": False, "detail": f"probe error: {e}"}
+
+    # --- Watcher process + heartbeat ---
+    procs = list_code_rag_processes()
+    watcher_procs = [p for p in procs if p.kind in ("watcher", "watch_cli")]
+    alive = bool(watcher_procs)
+    checks["watcher_alive"] = {
+        "ok": alive,
+        "detail": (
+            f"pid={watcher_procs[0].pid}" if alive else "no watcher process"
+        ),
+    }
+
+    hb_age = watcher_heartbeat_age_s(s.paths.data_dir / "watcher.heartbeat")
+    if hb_age is None:
+        hb_ok = False
+        hb_detail = "no heartbeat file"
+    elif hb_age > 120:
+        hb_ok = False
+        hb_detail = f"stale ({hb_age:.0f}s)"
+    else:
+        hb_ok = True
+        hb_detail = f"fresh ({hb_age:.0f}s)"
+    checks["watcher_heartbeat"] = {"ok": hb_ok, "detail": hb_detail}
+
+    # --- Chroma probe (subprocess-isolated, 5s timeout for quick health) ---
+    def _chroma_probe() -> dict[str, Any]:
+        return probe_chroma(s.chroma_dir, timeout_s=5.0)
+
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        chroma_res = ex.submit(_chroma_probe).result()
+    if chroma_res.get("ok"):
+        total = sum(chroma_res.get("counts", {}).values())
+        checks["chroma"] = {
+            "ok": True,
+            "detail": f"count={total} probe_ms={chroma_res.get('elapsed_s', 0)*1000:.0f}",
+        }
+    else:
+        checks["chroma"] = {
+            "ok": False,
+            "detail": ("DEADLOCKED — run `code-rag chroma-heal --kill`"
+                       if chroma_res.get("timed_out")
+                       else f"error: {chroma_res.get('error', 'unknown')}"),
+        }
+
+    # --- VRAM pressure ---
+    gpu = ops._gpu_status_via_nvidia_smi()
+    if gpu is None:
+        checks["vram"] = {"ok": True, "detail": "no GPU detected"}
+    else:
+        used, total = gpu.get("vram_used_gb", 0), gpu.get("vram_total_gb", 1)
+        pct = (used / max(total, 1)) * 100
+        checks["vram"] = {
+            "ok": pct < 90,
+            "detail": f"{used:.1f} / {total:.1f} GB ({pct:.0f}%)",
+        }
+
+    # --- LM Studio duplicate aliases ---
+    try:
+        loaded_ids = [m["id"] for m in r.get("models_loaded", [])]
+        dup_aliases = [m for m in loaded_ids if ":" in m and m.split(":")[1].isdigit()]
+        checks["lms_duplicates"] = {
+            "ok": not dup_aliases,
+            "detail": (f"{len(dup_aliases)} alias(es): {dup_aliases}"
+                       if dup_aliases else "none"),
+        }
+    except Exception:
+        checks["lms_duplicates"] = {"ok": True, "detail": "n/a"}
+
+    # --- Overall ---
+    critical_keys = {"lm_studio", "watcher_alive", "chroma"}
+    critical_fail = any(not checks[k]["ok"] for k in critical_keys if k in checks)
+    any_fail = any(not v["ok"] for v in checks.values())
+    overall = "critical" if critical_fail else ("degraded" if any_fail else "ok")
+
+    return JSONResponse({"overall": overall, "checks": checks})
+
+
 async def start_all(_req: Request) -> JSONResponse:
     s = _settings_or_500()
     if isinstance(s, JSONResponse):
@@ -151,6 +279,7 @@ def build_app() -> Starlette:
     routes = [
         Route("/",                       endpoint=root,            methods=["GET"]),
         Route("/api/status",             endpoint=status,          methods=["GET"]),
+        Route("/api/health",             endpoint=health,          methods=["GET"]),
         Route("/api/start/all",          endpoint=start_all,       methods=["POST"]),
         Route("/api/stop/all",           endpoint=stop_all,        methods=["POST"]),
         Route("/api/start/lms",          endpoint=start_lms,       methods=["POST"]),

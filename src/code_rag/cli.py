@@ -818,6 +818,175 @@ def eval(
     sys.exit(asyncio.run(_run()))
 
 
+@main.command("lms-enforce-settings")
+@click.option("--quiet", is_flag=True, help="Print only on action.")
+@click.option("--apply", is_flag=True,
+              help="Actually reload mismatched models (default: dry-run).")
+@click.pass_context
+def lms_enforce_settings(ctx: click.Context, quiet: bool, apply: bool) -> None:
+    """Phase 36-B: re-apply Phase 33 per-model settings to LM Studio.
+
+    Symptom this fixes: when LM Studio crashes and self-restarts (or
+    the user reloads a model via the UI), our `--parallel N --context M`
+    settings revert to LM Studio's stock defaults — Parallel=4 +
+    max-context. For a 4B embedder at max-context that's ~17 GB of
+    KV cache (vs ~4 GB at our trim). Today's failure cascade started
+    here: VRAM saturation → MCP attach failures → Chroma deadlock.
+
+    Detection: list loaded models, compare per-model context length vs
+    Phase 33 `_LMS_LOAD_SETTINGS`. Mismatch → unload + reload with
+    correct settings.
+
+    Run hourly via Task Scheduler (`code-rag-lms-enforce`). Idempotent:
+    when settings are correct, costs ~20ms.
+    """
+    settings = ctx.obj["settings"]
+    from code_rag.lms_ctl import _LMS_LOAD_SETTINGS, find_lms
+
+    loc = find_lms()
+    if loc.path is None:
+        click.echo("FAIL  lms.exe not found", err=True)
+        sys.exit(2)
+
+    # `lms ps` parses harder than `lms ls`; the rows tell us actual loaded
+    # state, including per-model context_length.
+    r = subprocess.run(
+        [str(loc.path), "ps"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=15.0, check=False,
+    )
+    if r.returncode != 0:
+        click.echo(f"FAIL  lms ps: {r.stderr[:200]}", err=True)
+        sys.exit(2)
+
+    actions: list[str] = []
+    for line in r.stdout.splitlines():
+        cols = line.split()
+        if len(cols) < 5 or cols[0] in ("IDENTIFIER", "---"):
+            continue
+        ident = cols[0]
+        # Skip aliases (`<model>:N`) — those are reaper's job.
+        if ":" in ident and ident.split(":")[1].isdigit():
+            continue
+        # Look up our preferred settings.
+        prefs = _LMS_LOAD_SETTINGS.get(ident)
+        if prefs is None:
+            continue
+        want_par, want_ctx = prefs
+        # `lms ps` columns: IDENTIFIER MODEL STATUS SIZE CONTEXT PARALLEL ...
+        # CONTEXT is at index 4 (0-based).
+        try:
+            actual_ctx = int(cols[4])
+        except (ValueError, IndexError):
+            continue
+        if actual_ctx == want_ctx:
+            continue   # match — no action.
+        action = (
+            f"{ident}: ctx={actual_ctx} → want {want_ctx}, parallel={want_par}"
+        )
+        actions.append(action)
+        if apply:
+            subprocess.run(
+                [str(loc.path), "unload", ident],
+                capture_output=True, text=True, timeout=15.0, check=False,
+            )
+            subprocess.run(
+                [str(loc.path), "load", ident,
+                 "--parallel", str(want_par),
+                 "--context-length", str(want_ctx),
+                 "--gpu", "max", "-y"],
+                capture_output=True, text=True, timeout=120.0, check=False,
+            )
+            action += "  → RELOADED"
+
+    if not quiet or actions:
+        if not actions:
+            click.echo("lms settings: all models match Phase 33 prefs")
+        else:
+            mode = "applied" if apply else "would apply"
+            click.echo(f"lms settings ({mode}):")
+            for a in actions:
+                click.echo(f"  {a}")
+    sys.exit(0 if not actions or apply else 1)
+
+
+@main.command("chroma-defrag")
+@click.option("--force", is_flag=True,
+              help="Defrag even if size is below threshold.")
+@click.option("--check-only", is_flag=True,
+              help="Print sizes; don't wipe.")
+@click.pass_context
+def chroma_defrag_cmd(ctx: click.Context, force: bool, check_only: bool) -> None:
+    """Phase 36-D: periodic preventive Chroma maintenance.
+
+    Wipes Chroma when `data_level0.bin` exceeds the threshold (5 GB by
+    default), forcing a clean rebuild. Reclaims preallocated HNSW
+    capacity and accumulated SQLite WAL bloat.
+
+    Run weekly via Task Scheduler — much cheaper than a corruption-
+    induced deadlock + emergency wipe (which is what May 3 was).
+
+    `--check-only` reports sizes without wiping.
+    """
+    settings = ctx.obj["settings"]
+    from code_rag.chroma_defrag import defrag_via_wipe_reindex, needs_defrag
+    should, report = needs_defrag(settings.chroma_dir)
+    click.echo(f"data_level0.bin total: {report['total_bytes']/1e9:.2f} GB")
+    click.echo(f"threshold:             {report['threshold_bytes']/1e9:.2f} GB")
+    click.echo(f"recommendation:        {'DEFRAG' if should else 'OK (skip)'}")
+    if check_only:
+        sys.exit(0 if not should else 2)
+    if not should and not force:
+        click.echo("(no defrag needed; pass --force to override)")
+        sys.exit(0)
+    click.echo("\nrunning wipe+reindex defrag...")
+    res = defrag_via_wipe_reindex(
+        settings.chroma_dir, index_meta_path=settings.index_meta_path,
+    )
+    click.echo(json.dumps(res, indent=2))
+    sys.exit(0 if res.get("wipe_ok") else 2)
+
+
+@main.command("chroma-heal")
+@click.option("--probe-timeout-s", default=30.0, show_default=True, type=float,
+              help="How long to wait for Chroma's count() probe before declaring it stuck.")
+@click.option("--dry-run", is_flag=True,
+              help="Probe only — don't kill anything or wipe.")
+@click.option("--quiet", is_flag=True, help="Print only on heal action.")
+@click.pass_context
+def chroma_heal(
+    ctx: click.Context, probe_timeout_s: float, dry_run: bool, quiet: bool,
+) -> None:
+    """Phase 36: probe Chroma; if it deadlocks, wipe + re-trigger reindex.
+
+    Symptom this fixes: chroma.sqlite3 grows multi-GB after many crashes,
+    HNSW data_level0.bin keeps preallocated capacity, count() deadlocks.
+    Every process trying to attach (MCP, watcher, dashboard) hangs.
+
+    Detection: subprocess-isolated probe with hard timeout (asyncio
+    cancellation can't escape Chroma's C++ extension hangs).
+
+    Recovery: kill the watcher + MCP servers (they hold Chroma locks),
+    wipe chroma/ + index_meta.json. Watcher's RestartCount in Task
+    Scheduler will spawn it back up; it'll re-embed against the FTS
+    source-of-truth in ~1-2h on this corpus.
+
+    Designed to be safe to run on a schedule (every 10 min via Task
+    Scheduler). When Chroma is healthy, the probe is a ~50ms no-op.
+    """
+    settings = ctx.obj["settings"]
+    from code_rag.chroma_watchdog import heal_if_unhealthy
+    report = heal_if_unhealthy(
+        settings.chroma_dir,
+        probe_timeout_s=probe_timeout_s,
+        index_meta_path=settings.index_meta_path,
+        dry_run=dry_run,
+    )
+    if not quiet or report["healed"]:
+        click.echo(json.dumps(report, indent=2))
+    sys.exit(0 if not report["healed"] else (0 if dry_run else 2))
+
+
 @main.command("rerank-ablate")
 @click.option("--fixture", type=click.Path(exists=True, path_type=Path), default=None,
               help="Eval fixture. Default: src/code_rag/eval/fixtures/manual_eval.json")
@@ -928,41 +1097,94 @@ def rerank_ablate(
               help="Suppress per-process output; print only the summary.")
 @click.pass_context
 def reap_cmd(ctx: click.Context, kill: bool, quiet: bool) -> None:
-    """Phase 32: find (and optionally kill) orphaned code_rag processes.
+    """Phase 32 + 36: full hygiene pass.
 
-    "Orphaned" = a code_rag MCP / dashboard / watcher process whose
-    legitimate ancestor (claude.exe for MCP, Task Scheduler for the others)
-    is no longer alive. These accumulate over time as Claude Code sessions
-    crash or restart without sending a clean shutdown signal to their MCP
-    subprocess.
+    Three checks, run in sequence on every invocation:
 
-    Without `--kill` this is a DRY-RUN: it lists what WOULD be reaped so
-    you can sanity-check before pulling the trigger.
+      1. **Orphan reap** (Phase 32): kill code_rag processes whose parent
+         (claude.exe / Task Scheduler / shell) has died. These leak when
+         Claude Code crashes without sending stdin EOF.
 
-    Designed to be safe to run on a schedule (e.g. every 10 min). Won't
-    touch live MCP servers attached to running Claude Code instances; only
-    reaps subprocesses whose parent has died.
+      2. **Watcher heartbeat** (Phase 36-C): if the watcher process is dead
+         OR its heartbeat file is older than 120s, kill any wedged
+         instance and trigger schtasks /Run code-rag-watch. Catches the
+         "watcher process alive but event loop wedged" failure mode that
+         caused today's silent watcher death.
+
+      3. **Duplicate LM Studio aliases** (Phase 36-F): unload `<model>:N`
+         aliases from LM Studio. These accumulate when `lms load <model>`
+         runs while the model is already loaded — LM Studio creates a
+         second copy with its own KV cache instead of replacing. Each
+         duplicate eats ~5 GB VRAM on a 4B embedder.
+
+    Designed to be safe to run on a schedule (every 10 min via Task
+    Scheduler entry `code-rag-reap`). All 3 checks short-circuit fast
+    when the system is healthy.
     """
-    _ = ctx
-    from code_rag.util.proc_hygiene import reap_orphans
+    settings = ctx.obj["settings"]
+    from code_rag.util.proc_hygiene import (
+        is_watcher_alive,
+        reap_orphans,
+        respawn_watcher_via_schtasks,
+        unload_duplicate_lms_aliases,
+        watcher_heartbeat_age_s,
+    )
+
+    # 1. Orphan reap.
     report = reap_orphans(kill=kill)
     n_alive = len(report["alive"])
     n_orphans = len(report["orphans"])
     n_killed = len(report["killed"])
     if not quiet:
         if n_orphans == 0:
-            click.echo(f"clean: {n_alive} live code_rag process(es), 0 orphans")
+            click.echo(f"orphans: clean ({n_alive} live)")
         else:
             mode = "KILLED" if kill else "WOULD KILL"
-            click.echo(f"{n_orphans} orphan(s) found ({mode}):")
+            click.echo(f"orphans: {n_orphans} ({mode})")
             for p in report["orphans"]:
                 click.echo(f"  pid={p['pid']:>6}  kind={p['kind'] or '?':<10s}  reason={p['reason']}")
-                click.echo(f"          cmd: {p['cmdline_preview']}")
-            click.echo(f"\nlive (kept): {n_alive}")
-            for p in report["alive"]:
-                click.echo(f"  pid={p['pid']:>6}  kind={p['kind'] or '?':<10s}")
+    if kill and n_orphans > 0:
+        click.echo(f"  killed: {n_killed}/{n_orphans}")
+
+    # 2. Watcher heartbeat (Phase 36-C).
+    hb_path = settings.paths.data_dir / "watcher.heartbeat"
+    age = watcher_heartbeat_age_s(hb_path)
+    alive = is_watcher_alive()
+    watcher_action = "ok"
+    if not alive:
+        watcher_action = "dead — respawning"
+        if kill:
+            respawn_watcher_via_schtasks()
+    elif age is None:
+        # Process alive but no heartbeat file → may be very fresh start;
+        # don't respawn yet, just note.
+        watcher_action = "alive but no heartbeat yet (fresh start?)"
+    elif age > 120:
+        watcher_action = f"alive but heartbeat stale ({age:.0f}s) — wedged, killing+respawning"
+        if kill:
+            from code_rag.util.proc_hygiene import (
+                kill_pid,
+                list_code_rag_processes,
+            )
+            for p in list_code_rag_processes():
+                if p.kind in ("watcher", "watch_cli"):
+                    kill_pid(p.pid)
+            import time as _t; _t.sleep(2)
+            respawn_watcher_via_schtasks()
+    if not quiet:
+        click.echo(f"watcher: {watcher_action}")
+
+    # 3. Duplicate LM Studio aliases (Phase 36-F).
     if kill:
-        click.echo(f"\nkilled: {n_killed}/{n_orphans}")
+        unloaded = unload_duplicate_lms_aliases()
+        if not quiet:
+            if unloaded:
+                click.echo(f"lms duplicates: unloaded {len(unloaded)} ({', '.join(unloaded)})")
+            else:
+                click.echo("lms duplicates: none")
+    elif not quiet:
+        click.echo("lms duplicates: skipped (dry-run)")
+
     sys.exit(0 if (n_orphans == 0 or kill) else 1)
 
 

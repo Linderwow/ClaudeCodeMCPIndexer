@@ -490,6 +490,124 @@ def reap_orphans(*, kill: bool = False) -> dict[str, list[dict[str, object]]]:
     return {"alive": alive, "orphans": orphans, "killed": killed}
 
 
+# ---- Phase 36-C: watcher heartbeat freshness check ------------------------
+
+
+def watcher_heartbeat_age_s(heartbeat_path: object) -> float | None:
+    """Return seconds since `heartbeat_path` was last written, or None
+    if the file doesn't exist.
+
+    The watcher writes this file every 30s; "stale" means >120s old
+    (4× cadence — generous to absorb GIL pressure during big upserts).
+    """
+    from pathlib import Path
+    p = heartbeat_path if isinstance(heartbeat_path, Path) else Path(str(heartbeat_path))
+    if not p.exists():
+        return None
+    try:
+        mtime = p.stat().st_mtime
+    except OSError:
+        return None
+    return time.time() - mtime
+
+
+def is_watcher_alive() -> bool:
+    """True iff at least one autostart_bootstrap or `code_rag watch` PROCESS
+    is alive. Distinct from heartbeat — process can be alive but wedged."""
+    if sys.platform != "win32":
+        return False
+    procs = list_code_rag_processes()
+    return any(p.kind in ("watcher", "watch_cli") for p in procs)
+
+
+def respawn_watcher_via_schtasks() -> bool:
+    """Trigger Task Scheduler to spawn a fresh code-rag-watch instance.
+
+    Idempotent — Task Scheduler's MultipleInstancesPolicy=IgnoreNew
+    means starting an already-running task is a no-op. Designed for use
+    by the reaper when it detects a dead-or-wedged watcher.
+    """
+    if sys.platform != "win32":
+        return False
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["schtasks", "/Run", "/TN", "code-rag-watch"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=15.0, check=False,
+            creationflags=0x08000000,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return r.returncode == 0
+
+
+# ---- Phase 36-F: LM Studio duplicate-alias unload -------------------------
+
+
+def unload_duplicate_lms_aliases(lms_path: object | None = None) -> list[str]:
+    """Find and unload `<model>:N` aliases in LM Studio's loaded list.
+
+    Symptom this addresses: when `lms load <model>` is called while
+    `<model>` is already loaded, LM Studio creates an alias `<model>:2`
+    instead of replacing. Each alias holds its own KV cache (~5 GB
+    each on a 4B embedder), saturating VRAM. Today's failure cascade
+    started with the user noticing two embedder instances; the reaper
+    should clean these up automatically.
+
+    Returns a list of identifiers that were unloaded.
+    """
+    if sys.platform != "win32":
+        return []
+    import re
+    import subprocess
+    from pathlib import Path
+
+    # Locate lms.exe.
+    if lms_path is None:
+        lms_path = Path.home() / ".lmstudio" / "bin" / "lms.exe"
+    p = Path(lms_path)
+    if not p.exists():
+        return []
+
+    try:
+        r = subprocess.run(
+            [str(p), "ps"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=10.0, check=False,
+            creationflags=0x08000000,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    if r.returncode != 0:
+        return []
+    # `lms ps` columns: IDENTIFIER MODEL STATUS SIZE CONTEXT PARALLEL DEVICE TTL
+    # Aliases show up in IDENTIFIER as `<model>:2`, `<model>:3`, ...
+    aliases: list[str] = []
+    pattern = re.compile(r"^(\S+):(\d+)\b")
+    for line in (r.stdout or "").splitlines():
+        if not line.strip() or line.startswith(("IDENTIFIER", "---")):
+            continue
+        first = line.split()[0] if line.split() else ""
+        m = pattern.match(first)
+        if m and int(m.group(2)) >= 2:
+            aliases.append(first)
+
+    unloaded: list[str] = []
+    for alias in aliases:
+        try:
+            ur = subprocess.run(
+                [str(p), "unload", alias],
+                capture_output=True, text=True, timeout=15.0, check=False,
+                creationflags=0x08000000,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            continue
+        if ur.returncode == 0:
+            unloaded.append(alias)
+    return unloaded
+
+
 def _proc_to_dict(p: ProcessInfo) -> dict[str, object]:
     return {
         "pid": p.pid,
