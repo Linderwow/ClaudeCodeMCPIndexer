@@ -515,15 +515,21 @@ def start_watcher_task() -> StepResult:
 # ---- stop operations --------------------------------------------------------
 
 
-def stop_all(settings: Settings, *, stop_lm_studio: bool = True) -> CompositeResult:
+def stop_all(
+    settings: Settings,
+    *,
+    stop_lm_studio: bool = True,
+    kill_mcp_servers: bool = True,
+) -> CompositeResult:
     """Bring the stack down COMPLETELY.
 
-    Stops watcher, unloads models, and stops the LM Studio server. The server
-    has to go too — if it stays up, ANY request from a Claude Code MCP
-    subprocess (or anything else pointing at /v1/embeddings) will JIT-reload
-    the embedder, defeating the user's intent. The watcher autostart task is
-    only stopped for THIS session — it'll fire again on next logon (the
-    user's hands-off-on-reboot requirement).
+    Stops watcher, unloads models, kills MCP servers, and stops the LM
+    Studio server. The server has to go too — if it stays up, ANY request
+    from a Claude Code MCP subprocess (or anything else pointing at
+    /v1/embeddings) will JIT-reload the embedder, defeating the user's
+    intent. The watcher autostart task is only stopped for THIS session —
+    it'll fire again on next logon (the user's hands-off-on-reboot
+    requirement).
 
     Phase 39: also writes a `data/.stopped` intent marker that the
     Phase 36-C reaper and Phase 37-L daily redeploy task respect. With
@@ -532,6 +538,14 @@ def stop_all(settings: Settings, *, stop_lm_studio: bool = True) -> CompositeRes
     autostart bootstrap deletes the marker on logon). Without this, the
     reaper would see `is_watcher_alive() == False` and respawn within
     10 minutes, defeating Stop All's intent.
+
+    Phase 39b: ALSO kills the `code-rag mcp` server processes Claude Code
+    spawned. Each MCP server holds a cross-encoder loaded into CUDA
+    (~2 GB VRAM); leaving them alive means Stop All frees LM Studio's
+    VRAM but the GPU still shows ~10-12 GB resident. Killing them is
+    safe: Claude Code reconnects on next request, paying a 5-10s
+    cross-encoder reload. Pass `kill_mcp_servers=False` to preserve
+    the older "soft stop" semantics (Stop All without MCP kill).
 
     Pass `stop_lm_studio=False` to keep the server up (e.g. for the
     granular-stop case where the dashboard's per-card buttons did the work).
@@ -552,10 +566,55 @@ def stop_all(settings: Settings, *, stop_lm_studio: bool = True) -> CompositeRes
         duration_ms=0.0,
     ))
     res.add(stop_watcher_task())
+    if kill_mcp_servers:
+        res.add(_kill_mcp_servers())
     res.add(unload_all_models())
     if stop_lm_studio:
         res.add(stop_lms_server())
     return res
+
+
+def _kill_mcp_servers() -> StepResult:
+    """Phase 39b: kill every `code-rag mcp` server process.
+
+    These are spawned by Claude Code (one per workspace) and each loads
+    the cross-encoder into CUDA. Stop All used to leave them alive
+    "to preserve sessions", but the consequence is ~10-12 GB of VRAM
+    sitting resident even after the user clicked Stop. Claude Code
+    naturally respawns its MCP child on the next request with a fresh
+    cross-encoder load (5-10s), so killing them here just delays the
+    next request, not the session itself.
+
+    Returns a StepResult counting how many we killed. If zero are alive,
+    returns OK with a "no MCP servers running" detail.
+    """
+    t0 = time.monotonic()
+    try:
+        from code_rag.util.proc_hygiene import kill_pid, list_code_rag_processes
+    except Exception as e:  # pragma: no cover — defensive
+        return StepResult(
+            "kill_mcp_servers", False, f"helper import failed: {e}",
+            (time.monotonic() - t0) * 1000,
+        )
+    procs = [p for p in list_code_rag_processes() if p.kind == "mcp"]
+    if not procs:
+        return StepResult(
+            "kill_mcp_servers", True, "no MCP servers running",
+            (time.monotonic() - t0) * 1000,
+        )
+    killed = 0
+    for p in procs:
+        try:
+            kill_pid(p.pid)
+            killed += 1
+        except Exception:
+            # Best-effort kill: a single bad PID shouldn't abort the whole pass.
+            continue
+    detail = f"killed {killed}/{len(procs)} MCP server(s)"
+    return StepResult(
+        "kill_mcp_servers", killed == len(procs), detail,
+        (time.monotonic() - t0) * 1000,
+    )
 
 
 def stop_watcher_task() -> StepResult:

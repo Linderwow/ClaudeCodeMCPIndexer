@@ -352,18 +352,23 @@ def test_stop_all_default_kills_everything_including_lm_studio(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The default Stop-all behavior is the user-intuitive one: kill the
-    server too so models can't JIT-reload from background requests."""
+    server too so models can't JIT-reload from background requests, AND
+    kill MCP servers (Phase 39b) so VRAM actually drops."""
     s = _make_settings(tmp_path, monkeypatch)
     seen: list[str] = []
     monkeypatch.setattr(ops, "stop_watcher_task",
                         lambda: seen.append("stop_watcher") or StepResult("a", True))
+    monkeypatch.setattr(ops, "_kill_mcp_servers",
+                        lambda: seen.append("kill_mcp") or StepResult("k", True))
     monkeypatch.setattr(ops, "unload_all_models",
                         lambda: seen.append("unload_all") or StepResult("b", True))
     monkeypatch.setattr(ops, "stop_lms_server",
                         lambda: seen.append("stop_lms") or StepResult("c", True))
     res = ops.stop_all(s)
     assert res.ok
-    assert seen == ["stop_watcher", "unload_all", "stop_lms"]
+    # MCP-kill must run BEFORE unload_all so cross-encoders aren't
+    # re-acquiring CUDA buffers right as we yank LM Studio's models.
+    assert seen == ["stop_watcher", "kill_mcp", "unload_all", "stop_lms"]
 
 
 def test_stop_all_with_stop_lm_studio_false_keeps_server(
@@ -374,10 +379,86 @@ def test_stop_all_with_stop_lm_studio_false_keeps_server(
     seen: list[str] = []
     monkeypatch.setattr(ops, "stop_watcher_task",
                         lambda: seen.append("a") or StepResult("a", True))
+    monkeypatch.setattr(ops, "_kill_mcp_servers",
+                        lambda: seen.append("k") or StepResult("k", True))
     monkeypatch.setattr(ops, "unload_all_models",
                         lambda: seen.append("b") or StepResult("b", True))
     monkeypatch.setattr(ops, "stop_lms_server",
                         lambda: seen.append("c") or StepResult("c", True))
     res = ops.stop_all(s, stop_lm_studio=False)
     assert res.ok
-    assert seen == ["a", "b"]  # server NOT touched
+    assert seen == ["a", "k", "b"]  # server NOT touched but MCP kill still runs
+
+
+def test_stop_all_with_kill_mcp_false_preserves_mcp_servers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Phase 39b: caller can opt out of MCP kill (older "soft stop"
+    behavior). Useful when the operator wants to drop LM Studio
+    without disrupting active Claude Code MCP sessions."""
+    s = _make_settings(tmp_path, monkeypatch)
+    seen: list[str] = []
+    monkeypatch.setattr(ops, "stop_watcher_task",
+                        lambda: seen.append("a") or StepResult("a", True))
+    monkeypatch.setattr(ops, "_kill_mcp_servers",
+                        lambda: seen.append("KILL_MCP_SHOULD_NOT_RUN") or
+                                StepResult("k", True))
+    monkeypatch.setattr(ops, "unload_all_models",
+                        lambda: seen.append("b") or StepResult("b", True))
+    monkeypatch.setattr(ops, "stop_lms_server",
+                        lambda: seen.append("c") or StepResult("c", True))
+    res = ops.stop_all(s, kill_mcp_servers=False)
+    assert res.ok
+    assert "KILL_MCP_SHOULD_NOT_RUN" not in seen
+    assert seen == ["a", "b", "c"]
+
+
+def test_kill_mcp_servers_no_processes_returns_ok(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_kill_mcp_servers` reports OK with a friendly detail when nothing
+    is running — Stop All on a freshly-booted machine should succeed."""
+    from code_rag.dashboard.operations import _kill_mcp_servers
+    monkeypatch.setattr(
+        "code_rag.util.proc_hygiene.list_code_rag_processes",
+        lambda: [],
+    )
+    r = _kill_mcp_servers()
+    assert r.ok
+    assert "no MCP servers running" in r.detail
+
+
+def test_kill_mcp_servers_kills_only_mcp_kind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_kill_mcp_servers` MUST NOT touch watcher / dashboard / unrelated
+    processes — only `kind == 'mcp'`. This is the safety guarantee that
+    keeps us from foot-gunning unrelated python projects (YoutubeBot,
+    other Claude Code tools, etc.)."""
+    from code_rag.dashboard.operations import _kill_mcp_servers
+    from code_rag.util.proc_hygiene import ProcessInfo
+    procs = [
+        ProcessInfo(pid=100, ppid=1, name="python.exe", cmdline="-m code_rag mcp",
+                    create_time=0.0, kind="mcp"),
+        ProcessInfo(pid=200, ppid=1, name="python.exe", cmdline="-m code_rag.autostart_bootstrap",
+                    create_time=0.0, kind="watcher"),
+        ProcessInfo(pid=300, ppid=1, name="python.exe", cmdline="-m code_rag dashboard",
+                    create_time=0.0, kind="dashboard"),
+        ProcessInfo(pid=400, ppid=1, name="python.exe", cmdline="-m code_rag mcp",
+                    create_time=0.0, kind="mcp"),
+    ]
+    monkeypatch.setattr(
+        "code_rag.util.proc_hygiene.list_code_rag_processes",
+        lambda: procs,
+    )
+    killed_pids: list[int] = []
+    monkeypatch.setattr(
+        "code_rag.util.proc_hygiene.kill_pid",
+        lambda pid: killed_pids.append(pid),
+    )
+    r = _kill_mcp_servers()
+    assert r.ok
+    assert sorted(killed_pids) == [100, 400]   # ONLY the two MCP procs
+    assert 200 not in killed_pids              # watcher safe
+    assert 300 not in killed_pids              # dashboard safe
+    assert "killed 2/2" in r.detail
