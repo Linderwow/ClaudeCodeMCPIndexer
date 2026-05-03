@@ -187,7 +187,7 @@ class SingletonLock:
         self._fd: int | None = None
         self.acquired: bool = False
 
-    def __enter__(self) -> "SingletonLock":
+    def __enter__(self) -> SingletonLock:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         # Try to read an existing lock.
         if self._path.exists():
@@ -256,8 +256,18 @@ class ProcessInfo:
     """Lightweight subset of psutil.Process — what the reaper needs to
     decide whether to kill a code_rag process."""
 
-    __slots__ = ("pid", "ppid", "name", "cmdline", "create_time", "kind",
-                 "ancestors_alive", "ancestor_names", "is_orphan", "reason")
+    __slots__ = (
+        "ancestor_names",
+        "ancestors_alive",
+        "cmdline",
+        "create_time",
+        "is_orphan",
+        "kind",
+        "name",
+        "pid",
+        "ppid",
+        "reason",
+    )
 
     def __init__(
         self, pid: int, ppid: int, name: str, cmdline: str,
@@ -299,10 +309,23 @@ def list_code_rag_processes() -> list[ProcessInfo]:
     import subprocess
     # WMIC is deprecated; use PowerShell + Get-CimInstance which is
     # supported on every modern Windows.
+    # Phase 38 (audit fix): anchor the cmdline match to actual code_rag
+    # entry points. Previously a bare 'code_rag' substring matched anything
+    # with that string in argv (e.g. a python script whose path contains
+    # `code_rag-debug.log`, or any third-party tool launched with a project
+    # path under code-rag-mcp/). Now we match SPECIFIC patterns the live
+    # processes actually present:
+    #     -m code_rag mcp                              (MCP server)
+    #     -m code_rag.autostart_bootstrap              (watcher)
+    #     -m code_rag dashboard                        (dashboard)
+    #     -m code_rag (CLI entry from another module)  (catch-all for our own)
     script = (
         "Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe' OR Name='python.exe'\" "
         "-EA SilentlyContinue | "
-        "Where-Object { $_.CommandLine -and $_.CommandLine -match 'code_rag' } | "
+        "Where-Object { $_.CommandLine -and "
+        "($_.CommandLine -match '-m\\s+code_rag(\\.|\\s|$)' "
+        " -or $_.CommandLine -match 'code-rag\\.exe' "
+        " -or $_.CommandLine -match 'code_rag\\\\Scripts\\\\code-rag') } | "
         "Select-Object ProcessId, ParentProcessId, Name, CommandLine, CreationDate | "
         "ConvertTo-Json -Compress"
     )

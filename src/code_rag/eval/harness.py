@@ -135,11 +135,25 @@ class EvalReport:
         return self._percentile(0.99)
 
     def _percentile(self, q: float) -> float:
+        """Linear-interpolation percentile, matching numpy.percentile default.
+
+        Phase 38 (audit fix): the previous nearest-rank `round((n-1)*q)`
+        method snapped p95 == p99 on small samples (e.g. n<10) because
+        round(0.95 * 9) == round(0.99 * 9) == 9. Linear interpolation
+        gives a continuous value that distinguishes nearby percentiles
+        on small fixtures.
+        """
         lat = sorted(r.latency_ms for r in self.cases)
         if not lat:
             return 0.0
-        idx = max(0, round(q * (len(lat) - 1)))
-        return lat[idx]
+        if len(lat) == 1:
+            return lat[0]
+        # Linear interpolation between the two surrounding ranks.
+        pos = q * (len(lat) - 1)
+        lo = int(pos)
+        hi = min(lo + 1, len(lat) - 1)
+        frac = pos - lo
+        return lat[lo] * (1 - frac) + lat[hi] * frac
 
     def _recall_at(self, k: int) -> float:
         if not self.cases:
@@ -224,7 +238,7 @@ def load_cases(path: Path) -> list[EvalCase]:
 
 
 def categorize_misses(
-    report: "EvalReport",
+    report: EvalReport,
     indexed_paths: set[str],
 ) -> dict[str, list[dict[str, Any]]]:
     """Phase 35 (A4): per-miss diagnostic — explain each failed query.
@@ -280,7 +294,7 @@ def categorize_misses(
 
 def diagnose_misses_with_cases(
     cases: Iterable[EvalCase],
-    report: "EvalReport",
+    report: EvalReport,
     indexed_paths: set[str],
 ) -> dict[str, list[dict[str, Any]]]:
     """Richer diagnostic that needs both the original cases AND the report.

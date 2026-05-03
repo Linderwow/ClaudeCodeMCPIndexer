@@ -135,8 +135,15 @@ def test_rerank_actually_reorders(monkeypatch: pytest.MonkeyPatch) -> None:
     assert paths == ["c.py", "b.py", "a.py"], paths
     # All hits stamped with `source="rerank"`.
     assert all(h.source == "rerank" for h in out)
-    # Scores reflect the cross-encoder output, not the original score.
-    assert out[0].score == 2.0
+    # Scores reflect the cross-encoder output passed through sigmoid (Phase 38
+    # normalization for unified [0,1] downstream consumers). Raw logit 2.0
+    # becomes ~0.881; we assert relative ordering + bounds rather than the
+    # exact pre-sigmoid value.
+    import math
+    assert out[0].score == pytest.approx(1.0 / (1.0 + math.exp(-2.0)))
+    assert 0.0 < out[0].score < 1.0
+    # And monotonicity: c.py (highest logit) > b.py > a.py.
+    assert out[0].score > out[1].score > out[2].score
 
 
 @pytest.mark.skipif(

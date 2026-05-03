@@ -299,22 +299,31 @@ Boot log: `logs\autostart.log` (plain text) + `logs\code_rag.jsonl` (structured)
 ```
 src/code_rag/
   interfaces/         Embedder, Reranker, VectorStore, GraphStore, LexicalStore
-  embedders/          lm_studio, fake (tests)
-  rerankers/          lm_studio, noop
+  embedders/          lm_studio, sentence_transformers, code_specialized, fake (tests)
+  rerankers/          lm_studio, lm_chat, cross_encoder (sentence-transformers), noop
   stores/             chroma_vector, sqlite_lexical, kuzu_graph
-  chunking/           treesitter (code), docs (MD/PDF/DOCX/HTML/CSS/SCSS)
-  indexing/           walker, indexer
-  graph/              extractor, ingest
-  retrieval/          search (hybrid), fusion (RRF)
-  watcher/            live (watchdog)
+  chunking/           treesitter (code), docs (MD/PDF/DOCX/HTML/CSS/SCSS),
+                      images (PDF image OCR via Tesseract — Phase 37-D)
+  indexing/           walker, indexer (streaming producer/consumer), file_hash, summary
+  graph/              extractor, ingest, scip
+  retrieval/          search (hybrid), fusion (RRF + MMR + identifier boost),
+                      query_rewriter, decompose (Phase 37-A), reflection (37-B), hyde
+  watcher/            live (watchdog with 30s heartbeat)
   mcp_server/         stdio server with 9 tools
-  eval/               harness + fixtures
+  eval/               harness, telemetry (Phase 37-C JSONL history),
+                      fixtures, mine_transcripts
+  dashboard/          local Starlette web UI + /api/health
+  util/               proc_hygiene, lm_janitor (37-F), redeploy (37-L),
+                      health_alerter (37-J), globs, hashing
+  chroma_watchdog.py  Phase 36-A subprocess-isolated probe + heal
+  chroma_defrag.py    Phase 36-D defrag-via-wipe-reindex
   install.py          one-shot installer (probe → index → wire Claude → autostart)
   autostart_bootstrap.py   Task Scheduler entry point
   lms_ctl.py          LM Studio CLI control (start server, load models)
   cli.py              Click CLI entry points
-scripts/              install-autostart.ps1, uninstall-autostart.ps1
-tests/                pytest suite — 74 tests, ~7 s full run
+scripts/              install-/uninstall- pairs for autostart, dashboard, reaper,
+                      watchdog, eval-cron, health-alerter, redeploy
+tests/                pytest suite — 470+ tests, ~25 s full run
 config.example.toml   template config (committed)
 config.toml           your config (gitignored)
 ```

@@ -237,10 +237,22 @@ async def _heartbeat_writer(settings: Settings) -> None:
     while True:
         try:
             hb_path.touch(exist_ok=True)
-            hb_path.write_text(str(int(asyncio.get_event_loop().time())),
+            # Phase 38 (audit fix): asyncio.get_event_loop() is deprecated
+            # in 3.10+ and warns in 3.12. The heartbeat content is just an
+            # opaque timestamp marker; mtime is what the reaper actually
+            # checks. Use time.time() directly — no event-loop coupling
+            # needed and it survives Python upgrades cleanly.
+            import time as _time
+            hb_path.write_text(str(int(_time.time())),
                                encoding="utf-8")
         except OSError as e:
             # Disk full / permission error — log but don't kill the
             # heartbeat loop; the reaper will see staleness and act.
             log.warning("watcher.heartbeat_write_failed", err=str(e))
+        # Catch unexpected exceptions so the heartbeat loop keeps running
+        # rather than silently crashing — a stale heartbeat triggers the
+        # reaper, which then has no diagnostic. Log + retry.
+        except Exception as e:
+            log.warning("watcher.heartbeat_unexpected_error",
+                        err=f"{type(e).__name__}: {e}")
         await asyncio.sleep(30)

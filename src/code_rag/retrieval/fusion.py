@@ -95,8 +95,13 @@ def boost_exact_matches(
         # that just mentions it inside a comment.
         body_matches = sum(1 for t in lc_idents if t in text_lc)
         struct_matches = sum(1 for t in lc_idents if t in sym_lc or t in path_lc)
-        # Cap so any single chunk can earn at most ~3x the boost.
-        capped = min(body_matches + 2 * struct_matches, 6)
+        # Phase 38 (audit fix): preserve struct > body weighting (a chunk
+        # whose SYMBOL is `OnBarUpdate` is more relevant than one that only
+        # mentions it in a comment), but cap at 3 to match the documented
+        # contract "+50% per matched identifier capped at 3 → max 2.5x boost"
+        # rather than the previous cap=6 that allowed up to 4x.
+        # Struct counts 2 toward the cap; body counts 1.
+        capped = min(body_matches + 2 * struct_matches, 3)
         if capped == 0:
             out.append(h)
             continue
@@ -152,7 +157,7 @@ def mmr_diversify(
 
     # Normalize relevance into [0, 1] so `lam` has a consistent meaning across
     # very different score scales: RRF scores are ~0.03, cosine similarities
-    # are ~0.85, rerank scores are 0–1. Without this normalization the
+    # are ~0.85, rerank scores are 0-1. Without this normalization the
     # penalty term drowns out RRF relevance entirely.
     #
     # Using `score / max_score` (not min-max). Min-max collapses the lowest
@@ -161,15 +166,12 @@ def mmr_diversify(
     # leaves the tail competitive once enough penalty accumulates above it.
     raw = [float(h.score) for h in hits]
     s_max = max(raw) if raw else 1.0
-    if s_max <= 1e-12:
-        rel = [1.0] * len(hits)
-    else:
-        rel = [s / s_max for s in raw]
+    rel = [1.0] * len(hits) if s_max <= 1e-12 else [s / s_max for s in raw]
 
     # Original index is the relevance-rank tiebreaker. Build a working list
     # of (orig_rank, hit, normalized_relevance) so we can pull greedily
     # without losing stability.
-    pool: list[tuple[int, SearchHit, float]] = list(zip(range(len(hits)), hits, rel))
+    pool: list[tuple[int, SearchHit, float]] = list(zip(range(len(hits)), hits, rel, strict=False))
     selected: list[SearchHit] = []
     path_count: dict[str, int] = {}
     pair_count: dict[tuple[str, str | None], int] = {}

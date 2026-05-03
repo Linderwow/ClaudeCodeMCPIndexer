@@ -90,7 +90,15 @@ async def cleanup_once(base_url: str) -> int:
     unloaded = 0
     for z in zombies:
         try:
-            r = await asyncio.to_thread(unload_model, loc.path, z.identifier)
+            # Phase 38 (audit fix): bumped timeout from default 30s to 90s.
+            # 7B-class rerankers can legitimately take 30-60s to flush KV
+            # cache + GPU buffers under VRAM pressure; killing mid-unload
+            # leaves LM Studio in undefined state and the zombie often
+            # remains. 90s gives enough headroom for the slowest realistic
+            # case while still bounding the janitor cycle.
+            r = await asyncio.to_thread(
+                unload_model, loc.path, z.identifier, timeout_s=90.0,
+            )
         except subprocess.TimeoutExpired:
             log.warning("lm_janitor.unload_timeout", identifier=z.identifier)
             continue

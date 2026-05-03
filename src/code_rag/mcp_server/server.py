@@ -23,6 +23,7 @@ blocks and can pass them straight into a prompt.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -645,6 +646,38 @@ async def _tool_ensure_workspace_indexed(
     dyn = DynamicRoots.load(res.settings.dynamic_roots_path)
     added = dyn.add(path, source="mcp.ensure_workspace_indexed")
 
+    # Phase 38 (audit fix): coordinate concurrent ensure_workspace_indexed
+    # invocations from multiple Claude Code sessions. Without this lock,
+    # two MCP processes can each spawn `code-rag index --path X` for the
+    # SAME path, both opening Kuzu in writer mode → second process fails
+    # noisily into auto_index.log that the user never sees. Skip the spawn
+    # when an indexer for this path is already in flight.
+    indexer_lock_dir = res.settings.paths.data_dir / "ensure_locks"
+    indexer_lock_dir.mkdir(parents=True, exist_ok=True)
+    # File name = sanitized path. Slashes/colons replaced with underscores.
+    lock_name = (
+        path.as_posix()
+        .replace("/", "_").replace(":", "_").replace("\\", "_")
+        .strip("_")[:200] + ".lock"
+    )
+    lock_file = indexer_lock_dir / lock_name
+    if lock_file.exists():
+        try:
+            existing_pid = int(lock_file.read_text("utf-8").strip())
+            from code_rag.util.proc_hygiene import is_process_alive
+            if is_process_alive(existing_pid):
+                return {
+                    "already_indexed":  False,
+                    "registered":       added,
+                    "path":             path.as_posix(),
+                    "background_pid":   existing_pid,
+                    "note": ("indexer already running for this path; "
+                             "watching the existing pid"),
+                }
+        except (ValueError, OSError):
+            # Stale or unreadable lock — fall through and overwrite.
+            pass
+
     # Spawn a detached indexing subprocess. We use sys.executable to stay
     # inside the same venv; `-m code_rag index --path` handles its own
     # lifecycle (opens stores, reindexes, closes). stdout/err redirected
@@ -677,6 +710,12 @@ async def _tool_ensure_workspace_indexed(
         [sys.executable, "-m", "code_rag", "index", "--path", str(path)],
         **popen_kwargs,
     )
+    # Stamp the singleton lock with the spawned PID so future invocations
+    # for the same path can detect the in-flight indexer. Best-effort:
+    # disk-full / permission failure just means future calls double-spawn,
+    # not a correctness issue.
+    with contextlib.suppress(OSError):
+        lock_file.write_text(str(proc.pid), encoding="utf-8")
     log.info("mcp.ensure_workspace_indexed.spawned",
              path=path.as_posix(), pid=proc.pid, added=added)
     return {

@@ -91,10 +91,24 @@ def _write_state(state_path: Path, snap: HealthSnapshot) -> None:
         "transition": snap.transition,
         "checks": snap.checks,
     }
+    # Phase 38: atomic write via temp + os.replace. Two concurrent runs
+    # (5-min cron + a manual --once) used to interleave bytes and produce
+    # a torn JSON file that next _read_previous failed to parse, masking
+    # the very transition we're trying to detect. os.replace is atomic on
+    # both Windows and POSIX, so a reader either sees the old file or the
+    # new one — never partial bytes.
+    import os as _os
+    import tempfile as _tempfile
     try:
-        state_path.write_text(
-            json.dumps(payload, indent=2), encoding="utf-8",
-        )
+        with _tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", delete=False,
+            dir=str(state_path.parent), prefix=".health-state.",
+            suffix=".tmp",
+        ) as tf:
+            json.dump(payload, tf, indent=2)
+            tf.flush()
+            tmp_name = tf.name
+        _os.replace(tmp_name, state_path)
     except OSError as e:
         log.warning("alerter.state_write_fail",
                     path=str(state_path), err=str(e))
@@ -137,6 +151,7 @@ def maybe_show_toast(snap: HealthSnapshot) -> bool:
     was actually shown (or attempted). No-ops on non-Windows.
     BurntToast is the preferred path; we don't fall back to msg.exe
     because a system-modal popup on background degradation is hostile."""
+    import base64
     import platform
     import subprocess
     if platform.system() != "Windows":
@@ -145,18 +160,27 @@ def maybe_show_toast(snap: HealthSnapshot) -> bool:
         return False
     title = f"code-rag {snap.overall}"
     body = _summarize_failed_checks(snap.checks)
-    # Use the same `New-BurntToastNotification` pattern other Windows tools
-    # use. If BurntToast isn't installed, the call fails silently — we log
-    # and move on.
-    ps_cmd = (
+    # Phase 38 (audit fix): pass title + body as PowerShell positional
+    # parameters via a parameterized scriptblock + ArgumentList, so even
+    # if a check `detail` contains backticks, $(..) substitution, or
+    # quote characters, the strings are treated as opaque parameter
+    # values — no command injection. The whole script is base64-encoded
+    # so PowerShell parses it without our involvement in arg quoting.
+    ps_script = (
+        "param($Title, $Body); "
         "if (Get-Module -ListAvailable -Name BurntToast) { "
         "Import-Module BurntToast -ErrorAction Stop; "
-        f"New-BurntToastNotification -Text \"{title}\", \"{body}\" "
+        "New-BurntToastNotification -Text $Title, $Body "
         "}"
     )
+    encoded = base64.b64encode(ps_script.encode("utf-16-le")).decode("ascii")
     try:
         subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+            [
+                "powershell", "-NoProfile", "-NonInteractive",
+                "-EncodedCommand", encoded,
+                "-args", title, body,
+            ],
             capture_output=True, timeout=10, check=False,
         )
         return True

@@ -22,6 +22,7 @@ a wipe). Wired as a periodic task — see scripts/install-watchdog-autostart.ps1
 """
 from __future__ import annotations
 
+import contextlib
 import shutil
 import subprocess
 import sys
@@ -38,8 +39,46 @@ log = get(__name__)
 
 
 _PROBE_SCRIPT = r'''
-import sys, time, json
+import sys, os, time, json, threading
 sys.path.insert(0, r"{src}")
+
+# Phase 38 (audit fix): if our parent dies (taskkill / Stop-ScheduledTask /
+# OS shutdown) WHILE we are stuck inside Chroma's C++ code, Windows does
+# NOT cascade-kill us — we orphan, hold a Chroma file lock, and the next
+# watchdog cycle ALSO times out because the directory is still locked.
+# A daemon thread watching the parent PID self-terminates this probe
+# within `parent_check_s` seconds of the parent's death.
+_PARENT_PID = {ppid}
+_PARENT_CHECK_S = 2.0
+
+
+def _watch_parent():
+    while True:
+        try:
+            if sys.platform == "win32":
+                # On Windows, signaling 0 to a dead PID raises OSError.
+                import ctypes
+                PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+                STILL_ACTIVE = 259
+                h = ctypes.windll.kernel32.OpenProcess(
+                    PROCESS_QUERY_LIMITED_INFORMATION, 0, _PARENT_PID,
+                )
+                if not h:
+                    os._exit(2)
+                code = ctypes.c_ulong()
+                ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(code))
+                ctypes.windll.kernel32.CloseHandle(h)
+                if code.value != STILL_ACTIVE:
+                    os._exit(2)
+            else:
+                os.kill(_PARENT_PID, 0)
+        except (OSError, ProcessLookupError):
+            os._exit(2)
+        time.sleep(_PARENT_CHECK_S)
+
+
+threading.Thread(target=_watch_parent, daemon=True).start()
+
 import chromadb
 t0 = time.monotonic()
 try:
@@ -79,7 +118,12 @@ def probe_chroma(
     """
     py = python_exe or sys.executable
     src_dir = Path(__file__).resolve().parents[2]   # → src/
-    script = _PROBE_SCRIPT.format(src=str(src_dir), path=str(chroma_dir))
+    import os as _os
+    script = _PROBE_SCRIPT.format(
+        src=str(src_dir),
+        path=str(chroma_dir),
+        ppid=_os.getpid(),
+    )
     t0 = time.monotonic()
     try:
         r = subprocess.run(
@@ -142,15 +186,11 @@ def wipe_chroma(chroma_dir: Path, *, also_index_meta: Path | None = None) -> boo
                   chroma_dir=str(chroma_dir), err=str(e))
         # Try ignore_errors=True as a fallback so a single locked file
         # doesn't block the whole recovery.
-        try:
+        with contextlib.suppress(OSError):
             shutil.rmtree(chroma_dir, ignore_errors=True)
-        except OSError:
-            pass
     if also_index_meta is not None and also_index_meta.exists():
-        try:
+        with contextlib.suppress(OSError):
             also_index_meta.unlink()
-        except OSError:
-            pass
     return not chroma_dir.exists()
 
 
@@ -212,12 +252,10 @@ def _kill_chroma_holders() -> None:
         "$_.CommandLine -notmatch 'tasks/b' } | "
         "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue }"
     )
-    try:
+    with contextlib.suppress(subprocess.TimeoutExpired, OSError):
         subprocess.run(
             ["powershell", "-NoProfile", "-Command", script],
             capture_output=True, text=True,
             timeout=15.0, check=False,
             creationflags=0x08000000,
         )
-    except (subprocess.TimeoutExpired, OSError):
-        pass

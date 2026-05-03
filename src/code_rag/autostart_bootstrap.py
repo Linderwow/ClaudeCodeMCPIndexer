@@ -225,10 +225,34 @@ async def _run() -> int:
         janitor_interval = float(getattr(janitor_cfg, "interval_s", 60.0)
                                  if janitor_cfg else 60.0)
         if janitor_enabled:
-            await asyncio.gather(
-                watch_forever(settings, indexer),
+            # Phase 38 (audit fix): the bare `asyncio.gather` cancels the
+            # watcher if the janitor ever raises. The janitor's internal
+            # try/except is broad, but defensive: spawn the janitor as a
+            # FIRE-AND-FORGET task whose exceptions are logged but never
+            # propagate. The watcher is the primary task; if it exits the
+            # main coroutine returns and the janitor task is cancelled
+            # cleanly in the finally block.
+            janitor_task = asyncio.create_task(
                 janitor_loop(settings.embedder.base_url, janitor_interval),
+                name="lm_janitor_loop",
             )
+            try:
+                await watch_forever(settings, indexer)
+            finally:
+                if not janitor_task.done():
+                    janitor_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await janitor_task
+                # Surface any non-cancel exception from the janitor for
+                # debuggability (already logged inside the janitor's loop).
+                if (janitor_task.done()
+                        and not janitor_task.cancelled()
+                        and janitor_task.exception() is not None):
+                    err = janitor_task.exception()
+                    _plain_log(
+                        autostart_log,
+                        f"lm_janitor exited with {type(err).__name__}: {err}",
+                    )
         else:
             await watch_forever(settings, indexer)
         _plain_log(autostart_log, "watcher exited normally")

@@ -194,7 +194,11 @@ def detect_drift(
         }
 
     def _median(vals: list[float]) -> float | None:
-        v = sorted(x for x in vals if isinstance(x, int | float))
+        # Phase 38 (audit fix): exclude bool — it's a subclass of int but
+        # `True/False` slipping into a baseline median pollutes the
+        # comparison (True==1, False==0 in arithmetic context).
+        v = sorted(x for x in vals
+                   if isinstance(x, int | float) and not isinstance(x, bool))
         if not v:
             return None
         n = len(v)

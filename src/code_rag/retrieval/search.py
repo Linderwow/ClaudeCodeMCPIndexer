@@ -5,6 +5,7 @@ import contextlib
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 from code_rag.interfaces.embedder import Embedder
 from code_rag.interfaces.graph_store import GraphStore, SymbolRef
@@ -21,6 +22,50 @@ from code_rag.retrieval.fusion import (
 )
 
 log = get(__name__)
+
+
+# Phase 38: cached repo roots for the recent_files_only_days filter.
+# `load_settings()` reads config + the dynamic_roots.json registry — fast
+# (~10 ms) but no need to hammer it on every chunk. We refresh on a TTL
+# so newly auto-discovered roots become visible without a process restart.
+_ROOTS_CACHE: tuple[tuple, float] = ((), 0.0)
+_ROOTS_TTL_S = 60.0
+
+
+def _cached_roots() -> tuple:
+    """Return a tuple of resolved Path roots, refreshed at most every 60s."""
+    global _ROOTS_CACHE
+    now = time.time()
+    cached, expiry = _ROOTS_CACHE
+    if cached and now < expiry:
+        return cached
+    try:
+        from code_rag.config import load_settings
+        roots = tuple(p for p in load_settings().all_roots())
+    except Exception:
+        roots = ()
+    _ROOTS_CACHE = (roots, now + _ROOTS_TTL_S)
+    return roots
+
+
+def _is_path_recent(rel_or_abs_path: str, cutoff: float) -> bool:
+    """Return True iff the file at `rel_or_abs_path` was modified at or after
+    `cutoff` (Unix epoch seconds). Tries the path as-is first (covers absolute
+    paths), then each configured root as a prefix. Missing files / OS errors
+    are treated as too-old."""
+    from pathlib import Path as _PathCls
+    p = _PathCls(rel_or_abs_path)
+    candidates: list[_PathCls] = [p]
+    if not p.is_absolute():
+        for root in _cached_roots():
+            candidates.append(root / rel_or_abs_path)
+    for c in candidates:
+        try:
+            if c.exists():
+                return c.stat().st_mtime >= cutoff
+        except OSError:
+            continue
+    return False
 
 
 @dataclass(frozen=True)
@@ -215,6 +260,7 @@ class HybridSearcher:
         )
 
         vec_tasks: list[asyncio.Task[Sequence[SearchHit]]] = []
+        vec_tasks: list[asyncio.Task[Any]] = []
         try:
             q_vecs = await q_vec_task
             where = self._build_where(params)
@@ -226,9 +272,30 @@ class HybridSearcher:
                 ))
                 for qv in q_vecs
             ]
-            vec_results = await asyncio.gather(*vec_tasks, return_exceptions=False)
+            # Phase 38: return_exceptions=True so a single failed arm doesn't
+            # orphan its siblings. Failed arms degrade gracefully to empty
+            # results (the union across remaining arms still produces hits).
+            raw_vec_results = await asyncio.gather(
+                *vec_tasks, return_exceptions=True,
+            )
+            vec_results: list[list[SearchHit]] = []
+            for i, r in enumerate(raw_vec_results):
+                if isinstance(r, BaseException):
+                    log.warning(
+                        "search.vec_arm_failed",
+                        arm=i, err=f"{type(r).__name__}: {r}",
+                    )
+                    vec_results.append([])
+                else:
+                    vec_results.append(r)  # type: ignore[arg-type]
             vec_hits_per_arm = [self._apply_filters(r, params) for r in vec_results]
-            lex_hits = self._apply_filters(await lex_task, params)
+            try:
+                lex_raw = await lex_task
+                lex_hits = self._apply_filters(lex_raw, params)
+            except Exception as e:
+                log.warning("search.lex_arm_failed",
+                            err=f"{type(e).__name__}: {e}")
+                lex_hits = []
         except BaseException:
             # Cancel any in-flight tasks so we don't leak coroutines on the
             # error path; suppress within the cleanup so the original
@@ -373,19 +440,13 @@ class HybridSearcher:
                 continue
             if params.path_glob and not fnmatch.fnmatchcase(h.chunk.path, params.path_glob):
                 continue
-            if cutoff is not None:
-                # Path is rel-to-root; resolve via repo prefix when present,
-                # otherwise treat as absolute / cwd-relative. If the file is
-                # gone (deleted between index and query), treat as too-old.
-                from pathlib import Path as _PathLib
-                p = _PathLib(h.chunk.path)
-                try:
-                    if p.exists() and p.stat().st_mtime >= cutoff:
-                        pass
-                    else:
-                        continue
-                except OSError:
-                    continue
+            # Phase 38: chunk.path is repo-relative (e.g. 'src/foo.py').
+            # Plain Path(...).exists() resolves vs cwd, which is wrong
+            # when the watcher / dashboard / search CLI has a different
+            # cwd than any indexed root. Try all configured roots in
+            # priority order; first that resolves wins.
+            if cutoff is not None and not _is_path_recent(h.chunk.path, cutoff):
+                continue
             out.append(h)
         return out
 

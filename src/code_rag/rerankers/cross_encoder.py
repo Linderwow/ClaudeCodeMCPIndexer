@@ -202,11 +202,20 @@ class CrossEncoderReranker(Reranker):
         # `predict` returns a numpy array; cast to plain floats for safety.
         arr = model.predict(pairs, show_progress_bar=False)
         try:
-            return [float(x) for x in arr]
+            raw = [float(x) for x in arr]
         except TypeError:
             # Some models return a 2D array (logits over labels). Take col 0
             # which is the relevance score for the standard cross-encoder API.
-            return [float(x[0]) for x in arr]
+            raw = [float(x[0]) for x in arr]
+        # Phase 38: BAAI/bge-reranker-v2-m3 returns raw logits in roughly
+        # [-10, +10]. Downstream consumers (reflection blend, prefer_root
+        # boost, min_score gate) all assume scores in [0, 1]. Apply sigmoid
+        # to unify the score scale. This ALSO ensures multiplicative boosts
+        # behave correctly: a positive boost on a previously-negative logit
+        # used to make hits MORE negative (demoting them); now boosting a
+        # value in (0, 1) always lifts the hit.
+        import math
+        return [1.0 / (1.0 + math.exp(-x)) for x in raw]
 
     @staticmethod
     def _stamp(

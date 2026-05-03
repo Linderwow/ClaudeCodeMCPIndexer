@@ -243,13 +243,21 @@ top_k              = 8
 # dashboard plots the trend so quality drift is visible over weeks.
 enabled = true
 
-# [indexer]
-# parallel_workers  = 4   # files-in-flight at the chunk+embed stage
-# embed_concurrency = 4   # async tasks per embed batch (server-side parallel)
+[indexer]
+# Phase 15: parallel-pipeline tuning. parallel_workers files-in-flight at
+# the chunk+embed stage; store writes are serialized via a single async
+# lock to keep Chroma/Kuzu/FTS upserts ordered.
+parallel_workers  = 4
+embed_concurrency = 4
 
-# [lm_janitor]
-# enabled    = true       # auto-unload `<model>:N` duplicate aliases
-# interval_s = 60.0
+[lm_janitor]
+# Phase 37-F: auto-unload `<model>:N` duplicate LM Studio aliases that
+# appear when `lms load` is called twice with different settings while
+# the model is already loaded. Each duplicate burns the full model size
+# in VRAM (~2.5 GB for qwen3-embedding-4B). Loop runs inside the
+# autostart watcher process; safe to leave on.
+enabled    = true
+interval_s = 60.0
 
 [mcp]
 name = "code-rag"

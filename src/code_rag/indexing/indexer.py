@@ -141,7 +141,13 @@ class Indexer:
         # and gets reaped after the walk finishes — see `_gc_stale_paths`.
         seen: set[str] = set()
         seen_lock = asyncio.Lock()
-        self._store_lock = asyncio.Lock()
+        # Phase 38: do NOT reassign self._store_lock here. Live watcher
+        # consumers may already be awaiting the constructor-created lock
+        # at this moment; replacing the instance leaves them holding a
+        # dead reference while new callers acquire a different lock,
+        # which would let two writers enter the Chroma/FTS/Kuzu critical
+        # section concurrently. The constructor's lock is the single
+        # source of truth for the indexer's lifetime.
         n_workers = max(1, self._settings.indexer.parallel_workers)
 
         # Bounded queue: (abs_path: Path, lang: str, is_doc: bool) | None

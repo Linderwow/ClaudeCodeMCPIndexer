@@ -103,14 +103,33 @@ def read_deployed_rev(data_dir: Path) -> str | None:
         return None
 
 
-def write_deployed_rev(data_dir: Path, rev: str) -> None:
-    """Persist the current rev as the deployed marker. Best-effort."""
+def write_deployed_rev(data_dir: Path, rev: str) -> bool:
+    """Persist the current rev as the deployed marker. Returns True iff
+    the write succeeded. Phase 38: atomic write via temp + os.replace so
+    a crash mid-write can't leave a truncated SHA that read_deployed_rev
+    would later mis-compare against current."""
     p = _stamp_path(data_dir)
-    p.parent.mkdir(parents=True, exist_ok=True)
     try:
-        p.write_text(rev.strip() + "\n", encoding="utf-8")
+        p.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        log.warning("redeploy.stamp_mkdir_fail", path=str(p.parent), err=str(e))
+        return False
+    import os as _os
+    import tempfile as _tempfile
+    try:
+        with _tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", delete=False,
+            dir=str(p.parent), prefix=".deployed-rev.",
+            suffix=".tmp",
+        ) as tf:
+            tf.write(rev.strip() + "\n")
+            tf.flush()
+            tmp_name = tf.name
+        _os.replace(tmp_name, p)
+        return True
     except OSError as e:
         log.warning("redeploy.stamp_write_fail", path=str(p), err=str(e))
+        return False
 
 
 def plan(repo_root: Path, data_dir: Path, *, force: bool = False) -> RedeployPlan:
@@ -283,10 +302,12 @@ def redeploy(
         time.sleep(settle_seconds)
     # 4) Start scheduled tasks again.
     result.tasks_started = start_tasks()
-    # 5) Stamp the new rev.
+    # 5) Stamp the new rev. Only mark as stamped if the write actually
+    # succeeded — a disk-full or permission failure used to be silently
+    # swallowed, claiming a deploy succeeded when the stamp was missing,
+    # so the next cron iteration re-killed the watcher.
     if p.current_rev:
-        write_deployed_rev(data_dir, p.current_rev)
-        result.stamped = True
+        result.stamped = write_deployed_rev(data_dir, p.current_rev)
     log.info(
         "redeploy.done",
         from_=p.deployed_rev, to=p.current_rev,
