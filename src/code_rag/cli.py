@@ -1360,6 +1360,59 @@ def eval_gate(
     sys.exit(asyncio.run(_run()))
 
 
+@main.command("redeploy")
+@click.option("--pull/--no-pull", default=False,
+              help="Run `git pull --ff-only` before checking the rev. Off by "
+                   "default; on by default in the daily Task Scheduler entry.")
+@click.option("--force", is_flag=True,
+              help="Redeploy even if the stamp matches HEAD (forces kill+restart).")
+@click.option("--dry-run", is_flag=True,
+              help="Print what would happen without killing or restarting anything.")
+@click.option("--quiet", is_flag=True, help="Suppress stdout output (cron mode).")
+@click.pass_context
+def redeploy_cmd(
+    ctx: click.Context, pull: bool, force: bool, dry_run: bool, quiet: bool,
+) -> None:
+    """Phase 37-L: redeploy code-rag services if the git rev changed.
+
+    Compares `git rev-parse HEAD` against `data/deployed-rev`. On mismatch
+    (or `--force`):
+      1. Stops `code-rag-watch` + `code-rag-dashboard` scheduled tasks.
+      2. Kills any straggler watcher/dashboard Python processes.
+      3. Restarts the tasks (which spawn fresh processes loading the new
+         code from disk).
+      4. Stamps the new rev to data/deployed-rev.
+
+    With `--pull`, runs `git pull --ff-only` first so a daily cron can
+    fully self-deploy whatever's been pushed to origin/main.
+
+    Exits:
+      0 if no redeploy was needed OR redeploy succeeded
+      1 if redeploy was needed but stamp couldn't be written
+    """
+    from code_rag.util.redeploy import find_repo_root, redeploy
+    settings = ctx.obj["settings"]
+    repo_root = find_repo_root()
+    result = redeploy(
+        repo_root, settings.paths.data_dir,
+        pull=pull, force=force, dry_run=dry_run,
+    )
+    if not quiet:
+        p = result.plan
+        click.echo(f"reason: {p.reason}")
+        click.echo(f"current: {(p.current_rev or 'n/a')[:12]}")
+        click.echo(f"deployed: {(p.deployed_rev or 'none')[:12]}")
+        if pull:
+            click.echo(f"pull: {'ok' if result.pulled else 'failed'}")
+        if p.needed and not dry_run:
+            click.echo(f"tasks_stopped: {result.tasks_stopped}")
+            click.echo(f"procs_killed: {result.procs_killed}")
+            click.echo(f"tasks_started: {result.tasks_started}")
+            click.echo(f"stamped: {result.stamped}")
+        click.echo(f"elapsed_s: {result.elapsed_s:.2f}")
+    sys.exit(0 if (not result.plan.needed or dry_run or result.stamped) else 1)
+
+
 @main.command("health-alert")
 @click.option("--base-url", default="http://127.0.0.1:7321", show_default=True,
               help="Dashboard URL to probe.")

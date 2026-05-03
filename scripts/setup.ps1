@@ -25,6 +25,19 @@
 param(
     [switch]$SkipModelDownload,
     [switch]$SkipAutostart,
+    # Phase 37: by default we register ALL the periodic scheduled tasks
+    # (reaper, watchdog suite, eval cron, health alerter, redeploy). Pass
+    # this flag to keep only the original 'code-rag-watch' that
+    # `code-rag install` registers — useful in CI / containers / tests.
+    [switch]$SkipAllSchedules,
+    # Optional heavy-ish deps. Off by default because they're not needed
+    # for the core retrieval pipeline. Turn on when you want PDF image
+    # OCR (Tesseract) and Windows toast alerts on health degradation.
+    [switch]$InstallTesseract,
+    [switch]$InstallBurntToast,
+    # pytesseract Python wrapper is small (~200 KB) and harmless when
+    # Tesseract isn't installed (Phase 37-D auto-no-ops). On by default.
+    [switch]$SkipPytesseract,
     [string]$EmbedderModel = "text-embedding-qwen3-embedding-4b",
     [string]$RerankerModel = "qwen3-reranker-4b"
 )
@@ -184,7 +197,131 @@ if ($LASTEXITCODE -ne 0) {
     Write-Ok "code-rag install completed"
 }
 
-# ---- 6. Summary -----------------------------------------------------------
+# ---- 6. Optional Python dep: pytesseract ---------------------------------
+
+if (-not $SkipPytesseract) {
+    Write-Step "Installing pytesseract (PDF image OCR; no-ops without Tesseract binary)"
+    & $venvPip install --quiet pytesseract pillow
+    if ($LASTEXITCODE -eq 0) {
+        Write-Ok "pytesseract installed (Phase 37-D auto-detects the binary at runtime)"
+    } else {
+        Write-Warn "pytesseract install failed (non-fatal); PDF image OCR will be disabled"
+    }
+} else {
+    Write-Ok "pytesseract install skipped (-SkipPytesseract)"
+}
+
+# ---- 7. Optional system dep: Tesseract OCR binary ------------------------
+#
+# Tesseract is what actually does OCR. pytesseract is the Python wrapper
+# that shells out to tesseract.exe. On Windows the supported install path
+# is winget (UB-Mannheim build). Off by default because it's a 50 MB
+# download + a system-wide install most users won't want by default.
+
+if ($InstallTesseract) {
+    Write-Step "Installing Tesseract OCR via winget (~50 MB)"
+    $tessOnPath = Get-Command tesseract -ErrorAction SilentlyContinue
+    if ($tessOnPath) {
+        Write-Ok "tesseract already on PATH at $($tessOnPath.Path)"
+    } else {
+        $winget = Get-Command winget -ErrorAction SilentlyContinue
+        if (-not $winget) {
+            Write-Warn "winget not found. Install Tesseract manually from https://github.com/UB-Mannheim/tesseract/wiki"
+        } else {
+            & winget install --id UB-Mannheim.TesseractOCR -e --silent --accept-source-agreements --accept-package-agreements
+            if ($LASTEXITCODE -eq 0) {
+                Write-Ok "Tesseract installed (you may need to log out/in for PATH refresh)"
+            } else {
+                Write-Warn "winget install Tesseract failed (rc=$LASTEXITCODE); continuing"
+            }
+        }
+    }
+} else {
+    Write-Ok "Tesseract install skipped (-InstallTesseract to enable PDF image OCR)"
+}
+
+# ---- 8. Optional toast notifications: BurntToast --------------------------
+#
+# Phase 37-J's health-alerter fires Windows toast notifications when the
+# dashboard /api/health goes degraded. Without BurntToast it still writes
+# data/health-state.json + data/alerts.jsonl — toasts just no-op. Off by
+# default because installing PowerShell modules is mildly invasive.
+
+if ($InstallBurntToast) {
+    Write-Step "Installing BurntToast PowerShell module (Phase 37-J toasts)"
+    $bt = Get-Module -ListAvailable -Name BurntToast -ErrorAction SilentlyContinue
+    if ($bt) {
+        Write-Ok "BurntToast already installed (v$($bt[0].Version))"
+    } else {
+        try {
+            Install-Module -Name BurntToast -Scope CurrentUser -Force -SkipPublisherCheck
+            Write-Ok "BurntToast installed for current user"
+        } catch {
+            Write-Warn "BurntToast install failed: $($_.Exception.Message)"
+        }
+    }
+} else {
+    Write-Ok "BurntToast install skipped (-InstallBurntToast to enable health toasts)"
+}
+
+# ---- 9. Phase 36/37 scheduled tasks --------------------------------------
+#
+# `code-rag install` (step 5) registers ONLY the watcher autostart. The
+# rest of the periodic infrastructure (reaper, watchdog suite, eval cron,
+# health alerter, redeploy) lives in dedicated install-*.ps1 scripts so
+# users can install pieces a la carte. We invoke them all here for the
+# "everything is automated" experience.
+
+if (-not $SkipAllSchedules) {
+    $scriptDir = Join-Path $repo "scripts"
+    $installers = @(
+        @{ Name = "Phase 32 reaper";              Path = "install-reaper-autostart.ps1" }
+        @{ Name = "Phase 36 watchdog suite";      Path = "install-watchdog-autostart.ps1" }
+        @{ Name = "Dashboard autostart";          Path = "install-dashboard-autostart.ps1" }
+        @{ Name = "Phase 37-I eval cron";         Path = "install-eval-cron.ps1" }
+        @{ Name = "Phase 37-J health alerter";    Path = "install-health-alerter-autostart.ps1" }
+        @{ Name = "Phase 37-L daily redeploy";    Path = "install-redeploy-autostart.ps1" }
+    )
+    foreach ($inst in $installers) {
+        $p = Join-Path $scriptDir $inst.Path
+        if (-not (Test-Path $p)) {
+            Write-Warn "$($inst.Name): installer missing at $p"
+            continue
+        }
+        Write-Step "Registering scheduled task: $($inst.Name)"
+        try {
+            & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $p 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Ok "$($inst.Name) installed"
+            } else {
+                Write-Warn "$($inst.Name) returned rc=$LASTEXITCODE (non-fatal)"
+            }
+        } catch {
+            Write-Warn "$($inst.Name) install errored: $($_.Exception.Message)"
+        }
+    }
+} else {
+    Write-Ok "Scheduled task suite skipped (-SkipAllSchedules)"
+}
+
+# ---- 10. Stamp the deployed rev so the redeploy task no-ops first run ----
+
+$dataDir = Join-Path $repo "data"
+$stampFile = Join-Path $dataDir "deployed-rev"
+if (-not (Test-Path $stampFile)) {
+    if (Test-Path (Join-Path $repo ".git")) {
+        try {
+            $headRev = (& git -C $repo rev-parse HEAD).Trim()
+            if ($headRev) {
+                New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+                Set-Content -Path $stampFile -Value $headRev -Encoding UTF8
+                Write-Ok "stamped data/deployed-rev = $($headRev.Substring(0, [Math]::Min(8, $headRev.Length)))"
+            }
+        } catch {}
+    }
+}
+
+# ---- 11. Summary -----------------------------------------------------------
 
 Write-Host ""
 Write-Host "================================================================" -ForegroundColor Magenta
