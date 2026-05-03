@@ -83,6 +83,52 @@ def model_is_loaded(base_url: str, model: str, timeout_s: float = 5.0) -> bool:
         return False
 
 
+def list_loaded_models_v0(base_url: str, timeout_s: float = 5.0) -> list[dict]:
+    """Return the LM Studio `/api/v0/models` list, filtered to currently-loaded
+    models. Each entry has at minimum an `id` (the LM Studio identifier — may
+    include a `:N` suffix when multiple instances of the same model are
+    loaded) and a `state` (`loaded` / `not-loaded`).
+
+    Used by the zombie-instance janitor to detect duplicates. Returns an
+    empty list on any HTTP / parse error so callers can treat "can't tell"
+    the same as "nothing to clean up".
+
+    The base_url here is the OpenAI-compatible /v1 base; the v0 endpoint
+    lives one path up (LM Studio exposes both `/v1/...` and `/api/v0/...`).
+    """
+    # Strip trailing /v1 to get the API root, then append /api/v0/models.
+    root = base_url.rstrip("/")
+    if root.endswith("/v1"):
+        root = root[: -len("/v1")]
+    try:
+        r = httpx.get(f"{root}/api/v0/models", timeout=timeout_s)
+        if r.status_code != 200:
+            return []
+        data = r.json()
+        return [m for m in data.get("data", []) if m.get("state") == "loaded"]
+    except (httpx.HTTPError, OSError, ValueError):
+        return []
+
+
+def unload_model(
+    lms: Path, identifier: str, *, timeout_s: float = 30.0,
+) -> subprocess.CompletedProcess[str]:
+    """Invoke `lms unload <identifier>` synchronously. Idempotent: unloading
+    an already-unloaded id exits non-zero with a benign message which
+    callers ignore. The identifier MUST be the full LM Studio identifier
+    including any `:N` suffix (use `list_loaded_models_v0` to discover it)."""
+    return subprocess.run(
+        [str(lms), "unload", identifier],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout_s,
+        creationflags=_CREATE_NO_WINDOW,
+        check=False,
+    )
+
+
 def wait_until_ready(base_url: str, model: str, *, timeout_s: float = 120.0) -> bool:
     """Block until the model is loaded or timeout elapses. Returns True on success."""
     deadline = time.monotonic() + timeout_s

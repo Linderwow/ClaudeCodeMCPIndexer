@@ -214,7 +214,23 @@ async def _run() -> int:
             _plain_log(autostart_log, f"metrics snapshot failed (non-fatal): {e}")
 
         _plain_log(autostart_log, "watcher starting")
-        await watch_forever(settings, indexer)
+        # Run the file watcher and the LM Studio zombie-instance janitor in
+        # parallel. The janitor periodically detects duplicate auto-loaded
+        # model instances (e.g. `<model>:2`) and unloads them — recovers the
+        # ~2.5 GB VRAM each duplicate would otherwise hold. Best-effort: a
+        # janitor crash never propagates into the watcher.
+        from code_rag.util.lm_janitor import janitor_loop
+        janitor_cfg = getattr(settings, "lm_janitor", None)
+        janitor_enabled = getattr(janitor_cfg, "enabled", True) if janitor_cfg else True
+        janitor_interval = float(getattr(janitor_cfg, "interval_s", 60.0)
+                                 if janitor_cfg else 60.0)
+        if janitor_enabled:
+            await asyncio.gather(
+                watch_forever(settings, indexer),
+                janitor_loop(settings.embedder.base_url, janitor_interval),
+            )
+        else:
+            await watch_forever(settings, indexer)
         _plain_log(autostart_log, "watcher exited normally")
         return 0
     finally:

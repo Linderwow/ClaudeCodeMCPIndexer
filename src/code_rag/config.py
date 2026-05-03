@@ -148,6 +148,18 @@ class McpConfig(BaseModel):
     name: str = "code-rag"
 
 
+class LmJanitorConfig(BaseModel):
+    """LM Studio zombie-instance janitor (auto-unloads `<model>:N` duplicates
+    that LM Studio's auto-load occasionally spawns alongside a base model).
+
+    Runs in-process with the autostart watcher. Pure cleanup task — never
+    initiates a load, only unloads duplicates whose base name is also
+    currently loaded. Safe to leave on; `enabled = false` opts out.
+    """
+    enabled: bool = True
+    interval_s: float = 60.0
+
+
 class Settings(BaseModel):
     paths: PathsConfig
     ignore: IgnoreConfig = Field(default_factory=IgnoreConfig)
@@ -161,6 +173,7 @@ class Settings(BaseModel):
     watcher: WatcherConfig = Field(default_factory=WatcherConfig)
     mcp: McpConfig = Field(default_factory=McpConfig)
     query_rewriter: QueryRewriterConfig = Field(default_factory=QueryRewriterConfig)
+    lm_janitor: LmJanitorConfig = Field(default_factory=LmJanitorConfig)
 
     # Resolved absolute paths to vector DB dir, kuzu DB dir, FTS file.
     @property
