@@ -1360,6 +1360,91 @@ def eval_gate(
     sys.exit(asyncio.run(_run()))
 
 
+@main.command("health-alert")
+@click.option("--base-url", default="http://127.0.0.1:7321", show_default=True,
+              help="Dashboard URL to probe.")
+@click.option("--once/--loop", default=True,
+              help="Single probe + exit (default), or loop forever.")
+@click.option("--interval-s", default=60.0, show_default=True, type=float,
+              help="Loop interval in seconds (only used with --loop).")
+@click.option("--toast/--no-toast", default=True,
+              help="Show a Windows toast on transition (BurntToast required).")
+@click.option("--quiet", is_flag=True,
+              help="Suppress stdout output.")
+@click.pass_context
+def health_alert(
+    ctx: click.Context, base_url: str, once: bool, interval_s: float,
+    toast: bool, quiet: bool,
+) -> None:
+    """Phase 37-J: probe the dashboard /api/health and write state +
+    alerts to disk.
+
+    Single-shot mode (default) is designed for Task Scheduler — runs one
+    probe, writes data/health-state.json, appends to data/alerts.jsonl
+    on transitions, and exits with status code 0 (ok) / 1 (degraded) /
+    2 (critical / unreachable).
+
+    Loop mode keeps polling until killed; useful for ad-hoc monitoring.
+    """
+    from code_rag.util.health_alerter import (
+        AlerterPaths,
+        check_once,
+        poll_forever,
+    )
+    settings = ctx.obj["settings"]
+    paths = AlerterPaths.for_data_dir(settings.paths.data_dir)
+    if not once:
+        # Loop mode never returns; the user kills it.
+        poll_forever(paths, base_url=base_url, interval_s=interval_s, show_toast=toast)
+        return
+    snap = check_once(paths, base_url=base_url, show_toast=toast)
+    if not quiet:
+        click.echo(f"overall={snap.overall} transition={snap.transition} "
+                   f"previous={snap.previous_overall}")
+    code = {"ok": 0, "degraded": 1, "critical": 2, "unreachable": 2}.get(snap.overall, 2)
+    sys.exit(code)
+
+
+@main.command("eval-drift-check")
+@click.option("--baseline-window", default=7, show_default=True, type=int,
+              help="How many recent runs (excluding the latest) to median for the baseline.")
+@click.option("--threshold-pp", default=2.0, show_default=True, type=float,
+              help="Regression threshold in percentage points. Drops below this on any "
+                   "headline metric exit non-zero.")
+@click.option("--json-out", "json_out", type=click.Path(path_type=Path), default=None,
+              help="Write the drift report as JSON to this path.")
+@click.option("--quiet", is_flag=True, help="Suppress stdout output (use exit code only).")
+@click.pass_context
+def eval_drift_check(
+    ctx: click.Context, baseline_window: int, threshold_pp: float,
+    json_out: Path | None, quiet: bool,
+) -> None:
+    """Phase 37-I: detect quality drift in the eval-gate history JSONL.
+
+    Compares the latest run's headline metrics against the median of the
+    previous `baseline_window` runs. Exits 1 on regressions over
+    `threshold_pp`, 0 otherwise (including "insufficient data").
+
+    Designed to run via Task Scheduler after the daily `eval-gate`. The
+    non-zero exit code can be wired to a Windows toast notification or
+    written to data/health-state.json by Phase 37-J's dashboard alerter.
+    """
+    from code_rag.eval.telemetry import detect_drift, history_path, read_history
+    settings = ctx.obj["settings"]
+    rows = read_history(history_path(settings.paths.data_dir))
+    drift = detect_drift(
+        rows,
+        baseline_window=baseline_window,
+        threshold_pp=threshold_pp,
+    )
+    if json_out:
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        json_out.write_text(json.dumps(drift, indent=2), encoding="utf-8")
+    if not quiet:
+        click.echo(json.dumps(drift, indent=2))
+    sys.exit(1 if drift["status"] == "regressed" else 0)
+
+
 @main.command("fsck")
 @click.option("--fix", "auto_fix", is_flag=True,
               help="Attempt safe auto-repairs (drop missing dynamic roots, prune orphan file-hash rows).")

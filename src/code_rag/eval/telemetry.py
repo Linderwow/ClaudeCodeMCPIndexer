@@ -128,6 +128,113 @@ def read_history(history_file: Path, *, tail: int | None = None) -> list[dict[st
     return rows
 
 
+def detect_drift(
+    rows: Iterable[dict[str, Any]],
+    *,
+    baseline_window: int = 7,
+    threshold_pp: float = 2.0,
+    metric_keys: tuple[str, ...] = ("recall@1", "recall@3", "recall@10", "mrr"),
+) -> dict[str, Any]:
+    """Phase 37-I: classify quality drift over the recent run history.
+
+    Compares the LATEST run against the median of the previous
+    `baseline_window` runs. Any headline metric that drops by more than
+    `threshold_pp` percentage points fires a regression flag.
+
+    Why median, not first-row: history.jsonl accumulates runs across
+    embedder/reranker/chunker swaps. The first row may be on a totally
+    different config. The recent window is the relevant baseline for
+    "did anything regress this week?".
+
+    Returns:
+        {
+          "status":     "ok" | "regressed" | "insufficient_data",
+          "n_rows":     int,
+          "latest_ts":  ISO 8601 | None,
+          "regressions": [
+              {"metric": "recall@1", "latest": 0.65, "baseline": 0.70,
+               "delta_pp": -5.0}
+          ],
+          "threshold_pp": float (echoed for clarity)
+        }
+
+    The CLI (`code-rag eval-drift-check`) exits non-zero when status is
+    "regressed", letting Task Scheduler treat it as a failure surface
+    a Windows toast / status flag.
+    """
+    rows = list(rows)
+    if len(rows) < 2:
+        return {
+            "status": "insufficient_data",
+            "n_rows": len(rows),
+            "latest_ts": rows[-1].get("ts") if rows else None,
+            "regressions": [],
+            "threshold_pp": threshold_pp,
+        }
+
+    latest = rows[-1].get("summary", {})
+    if not isinstance(latest, dict):
+        return {
+            "status": "insufficient_data",
+            "n_rows": len(rows),
+            "latest_ts": rows[-1].get("ts"),
+            "regressions": [],
+            "threshold_pp": threshold_pp,
+        }
+
+    # Baseline = median of previous window. Skip the latest row itself.
+    window = rows[-(baseline_window + 1):-1] if baseline_window > 0 else rows[:-1]
+    if not window:
+        return {
+            "status": "insufficient_data",
+            "n_rows": len(rows),
+            "latest_ts": rows[-1].get("ts"),
+            "regressions": [],
+            "threshold_pp": threshold_pp,
+        }
+
+    def _median(vals: list[float]) -> float | None:
+        v = sorted(x for x in vals if isinstance(x, int | float))
+        if not v:
+            return None
+        n = len(v)
+        return v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2
+
+    regressions: list[dict[str, Any]] = []
+    for key in metric_keys:
+        try:
+            latest_val = float(latest.get(key, 0.0))
+        except (TypeError, ValueError):
+            continue
+        baseline_vals: list[float] = []
+        for r in window:
+            s = r.get("summary", {})
+            if isinstance(s, dict) and key in s:
+                try:
+                    baseline_vals.append(float(s[key]))
+                except (TypeError, ValueError):
+                    continue
+        baseline = _median(baseline_vals)
+        if baseline is None:
+            continue
+        delta_pp = round((latest_val - baseline) * 100, 2)
+        if delta_pp < -abs(threshold_pp):
+            regressions.append({
+                "metric": key,
+                "latest": round(latest_val, 4),
+                "baseline": round(baseline, 4),
+                "delta_pp": delta_pp,
+            })
+
+    return {
+        "status": "regressed" if regressions else "ok",
+        "n_rows": len(rows),
+        "latest_ts": rows[-1].get("ts"),
+        "regressions": regressions,
+        "threshold_pp": threshold_pp,
+    }
+
+
 def trend_summary(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
     """Reduce a list of history rows to a compact trend summary.
 

@@ -143,6 +143,30 @@ class DocChunker:
                     symbol=sym, kind=ChunkKind.DOC,
                     start_line=page_no, end_line=page_no, text=w,
                 ))
+
+        # Phase 37-D: extract OCR'd text from embedded images. Architecture
+        # diagrams, mermaid renders, screenshots — text that ONLY exists
+        # inside images and is invisible to page.extract_text(). Best-effort:
+        # silently no-ops if Tesseract isn't installed (the regular text
+        # chunks above are still emitted).
+        from code_rag.chunking.images import extract_pdf_image_text
+        try:
+            ocr_pages = extract_pdf_image_text(abs_path)
+        except Exception as e:
+            log.debug("docs.pdf_ocr_fail", path=rel_path, err=str(e))
+            ocr_pages = []
+        for page_no, ocr_text in ocr_pages:
+            for idx, w in enumerate(self._split_text_windows(ocr_text), start=1):
+                sym = f"page:{page_no}/ocr#{idx}"
+                # Tag chunk text so it's visible to BOTH bm25 (token match)
+                # and the searcher's match_reason hint that this came from OCR.
+                marked = f"[OCR page {page_no}]\n{w}"
+                out.append(Chunk(
+                    id=chunk_id(repo, rel_path, sym, marked, page_no),
+                    repo=repo, path=rel_path, language="pdf",
+                    symbol=sym, kind=ChunkKind.DOC,
+                    start_line=page_no, end_line=page_no, text=marked,
+                ))
         return out
 
     def _chunk_docx(self, repo: str, abs_path: Path, rel_path: str) -> list[Chunk]:

@@ -67,6 +67,24 @@ class SearchParams:
     # 0.0 = disabled; 0.5 = +50% per matched identifier (capped at 3 per hit).
     exact_match_boost: float = 0.5
 
+    # ---- Phase 37-K: filter UX --------------------------------------------
+
+    # If set to a positive int, drop hits whose source file's mtime is
+    # older than N days. `None` or `0` disables the filter (no-op). Typical
+    # values: 1 (today), 7 (this week), 30 (this month).
+    # Most code-search use cases benefit: agents asking "where did we change
+    # X recently" don't want chunks from files that haven't been touched in
+    # a year showing up. File-system stat() is cheap (cached at OS level).
+    recent_files_only_days: int | None = None
+
+    # If set, multiplicatively boost hits whose path is under this root.
+    # Useful for steering an agent currently editing repo A toward A's
+    # files vs unrelated repo B. score *= (1 + prefer_root_boost) for
+    # hits in the preferred root; others untouched. Path comparison is
+    # case-insensitive and works on either absolute or relative paths.
+    prefer_root: str | None = None
+    prefer_root_boost: float = 0.25
+
 
 @dataclass
 class SearchResponse:
@@ -274,6 +292,13 @@ class HybridSearcher:
             except Exception as e:
                 log.warning("search.reflect_fail", err=f"{type(e).__name__}: {e}")
 
+        # 4c) Phase 37-K: prefer-root boost. Runs after rerank so the boost
+        # applies to scores the user actually sees in match_reason. Cheap:
+        # one pure-Python prefix check per hit. Sort-stable so non-boosted
+        # hits keep their relative rerank order.
+        if params.prefer_root:
+            reranked = self._apply_root_boost(reranked, params)
+
         # 5) Confidence gate.
         no_match = False
         if params.min_score > 0.0:
@@ -332,6 +357,14 @@ class HybridSearcher:
     @staticmethod
     def _apply_filters(hits: Sequence[SearchHit], params: SearchParams) -> list[SearchHit]:
         import fnmatch
+        # Phase 37-K: pre-compute the recency cutoff once outside the loop.
+        # mtime comparison uses os.path.getmtime which is microseconds and
+        # OS-cached after the first call per path.
+        cutoff: float | None = None
+        if params.recent_files_only_days is not None and params.recent_files_only_days > 0:
+            import time
+            cutoff = time.time() - params.recent_files_only_days * 86400.0
+
         out = []
         for h in hits:
             if params.language and h.chunk.language != params.language:
@@ -340,7 +373,50 @@ class HybridSearcher:
                 continue
             if params.path_glob and not fnmatch.fnmatchcase(h.chunk.path, params.path_glob):
                 continue
+            if cutoff is not None:
+                # Path is rel-to-root; resolve via repo prefix when present,
+                # otherwise treat as absolute / cwd-relative. If the file is
+                # gone (deleted between index and query), treat as too-old.
+                from pathlib import Path as _PathLib
+                p = _PathLib(h.chunk.path)
+                try:
+                    if p.exists() and p.stat().st_mtime >= cutoff:
+                        pass
+                    else:
+                        continue
+                except OSError:
+                    continue
             out.append(h)
+        return out
+
+    @staticmethod
+    def _apply_root_boost(
+        hits: Sequence[SearchHit], params: SearchParams,
+    ) -> list[SearchHit]:
+        """Phase 37-K: multiplicatively boost hits under `prefer_root`.
+
+        Comparison is case-insensitive and uses both forward and back
+        slashes interchangeably so Windows / POSIX paths work.
+        """
+        if not params.prefer_root or params.prefer_root_boost <= 0:
+            return list(hits)
+        prefix = params.prefer_root.replace("\\", "/").rstrip("/").lower()
+        boost = 1.0 + params.prefer_root_boost
+        out: list[SearchHit] = []
+        for h in hits:
+            path = h.chunk.path.replace("\\", "/").lower()
+            if path.startswith(prefix + "/") or path == prefix:
+                # Stamp the boost in match_reason so the agent sees why this
+                # rose in the rankings — debuggability matters for trust.
+                reason = (h.match_reason or "") + f" +prefer_root({params.prefer_root_boost:+.2f})"
+                out.append(h.model_copy(update={
+                    "score": h.score * boost,
+                    "match_reason": reason.strip(),
+                }))
+            else:
+                out.append(h)
+        # Re-sort because boosting may have reshuffled ordering.
+        out.sort(key=lambda h: h.score, reverse=True)
         return out
 
     # ---- per-hit polish -----------------------------------------------------

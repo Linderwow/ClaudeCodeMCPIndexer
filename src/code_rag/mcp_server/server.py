@@ -93,6 +93,14 @@ TOOLS: list[Tool] = [
                     "type": "boolean", "default": False,
                     "description": "Also return 1-hop graph neighborhood (callers + callees) for each hit. Off by default to keep the call fast; enable when planning an edit.",
                 },
+                "recent_files_only_days": {
+                    "type": "integer", "minimum": 0,
+                    "description": "Phase 37-K. Drop hits whose source file's mtime is older than N days. Useful for 'what did we change recently around X?' queries — keeps year-old code from drowning out actively-edited files. 7-30 is the typical range.",
+                },
+                "prefer_root": {
+                    "type": "string",
+                    "description": "Phase 37-K. Boost hits whose path is under this root (case-insensitive prefix match). Useful when working in repo A and you want results from A to outrank look-alikes in repo B. Boost factor is +25%% per hit; non-matching hits untouched. The boost applies after rerank so match_reason shows it.",
+                },
             },
             "required": ["query"],
         },
@@ -417,6 +425,11 @@ class ServerResources:
 
 async def _tool_search_code(res: ServerResources, args: dict[str, Any]) -> dict[str, Any]:
     assert res.searcher is not None
+    # Phase 37-K: optional recency filter + root-preference boost. None
+    # means "not provided" so SearchParams uses the dataclass default
+    # (no filter / no boost).
+    rfo_raw = args.get("recent_files_only_days")
+    recent_days = int(rfo_raw) if rfo_raw is not None else None
     params = SearchParams(
         k_final=int(args.get("k", 8)),
         k_vector=res.settings.reranker.top_k_in,
@@ -427,6 +440,8 @@ async def _tool_search_code(res: ServerResources, args: dict[str, Any]) -> dict[
         min_score=float(args.get("min_score", 0.0)),
         max_chars_per_hit=int(args.get("max_chars_per_hit", 1200)),
         attach_neighbors=bool(args.get("attach_neighbors", False)),
+        recent_files_only_days=recent_days,
+        prefer_root=args.get("prefer_root"),
     )
     resp = await res.searcher.search_full(str(args["query"]), params)
     hits_out = []
