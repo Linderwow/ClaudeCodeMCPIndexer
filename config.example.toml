@@ -215,5 +215,41 @@ timeout_s = 8.0
 cache    = true
 db       = "rewrite_cache.db"
 
+[decompose]
+# Phase 37-A: query decomposition. Splits a multi-part question into
+# 2-3 sub-queries that each become an extra retrieval arm. Disabled by
+# default; enable + set `model` to a loaded chat model to opt in.
+enabled  = false
+base_url = ""                       # blank = use embedder.base_url
+model    = ""                       # blank = disabled
+timeout_s = 8.0
+
+[reflection]
+# Phase 37-B: post-rerank reflection. LLM scores how directly each top-K
+# candidate answers the question; blended with the cross-encoder score.
+# Confidence-gated, so confident queries pay no LLM cost. Disabled by
+# default.
+enabled            = false
+base_url           = ""
+model              = ""
+timeout_s          = 15.0
+blend_alpha        = 0.6
+skip_if_top1_above = 0.7
+top_k              = 8
+
+[telemetry]
+# Phase 37-C: continuous retrieval telemetry. When enabled, every
+# eval-gate invocation appends one row to data/eval/history.jsonl. The
+# dashboard plots the trend so quality drift is visible over weeks.
+enabled = true
+
+# [indexer]
+# parallel_workers  = 4   # files-in-flight at the chunk+embed stage
+# embed_concurrency = 4   # async tasks per embed batch (server-side parallel)
+
+# [lm_janitor]
+# enabled    = true       # auto-unload `<model>:N` duplicate aliases
+# interval_s = 60.0
+
 [mcp]
 name = "code-rag"

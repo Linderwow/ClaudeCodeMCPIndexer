@@ -88,13 +88,18 @@ class TreeSitterChunker:
         self._min = min_chars
         self._max = max_chars
         self._langs = _load_languages()
-        # tree-sitter 0.25 Parser takes Language in constructor, but also supports .language = ...
-        self._parsers: dict[str, Parser] = {k: Parser(v) for k, v in self._langs.items()}
+        # Phase 37 audit fix: tree-sitter Parser holds parse state and is
+        # NOT reentrant. Earlier we cached one Parser per language and
+        # called `.parse()` on it from N async-to-thread workers, which
+        # could corrupt the tree or segfault under load (parallel_workers
+        # > 1 is the default). Per-call Parser construction is cheap
+        # (microseconds) compared to the parse itself; the language
+        # objects (loaded once) are the actually expensive part.
 
     # ---- public entry -------------------------------------------------------
 
     def chunk_file(self, repo: str, abs_path: Path, rel_path: str, language: str) -> list[Chunk]:
-        if language not in self._parsers:
+        if language not in self._langs:
             return []
         try:
             src = abs_path.read_bytes()
@@ -104,7 +109,9 @@ class TreeSitterChunker:
         if not src.strip():
             return []
 
-        tree = self._parsers[language].parse(src)
+        # Per-call Parser — see __init__ comment.
+        parser = Parser(self._langs[language])
+        tree = parser.parse(src)
         if tree is None or tree.root_node is None:
             return self._fallback(repo, rel_path, language, src)
 

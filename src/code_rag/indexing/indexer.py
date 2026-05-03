@@ -172,19 +172,34 @@ class Indexer:
                 fut.result()
 
         async def _consumer() -> None:
+            # Phase 37 audit fix: every iteration must call task_done(),
+            # even when _process_file raises. Previously a single
+            # uncaught exception killed the consumer mid-flight without
+            # marking the queue item as done — Producer's `queue.put()`
+            # would then block forever once the queue filled.
             while True:
                 item = await queue.get()
-                if item is None:
+                try:
+                    if item is None:
+                        return
+                    abs_path, lang, is_doc = item
+                    try:
+                        rel = await self._process_file(
+                            abs_path, lang, stats, is_doc=is_doc,
+                        )
+                    except Exception as e:
+                        # _process_file's contract is to log + record the
+                        # error in stats and return; if any path raises
+                        # anyway, we still want the worker to keep going.
+                        stats.errors.append(
+                            f"consumer:{getattr(abs_path, 'name', '?')}:{type(e).__name__}:{e}",
+                        )
+                        rel = None
+                    if rel is not None:
+                        async with seen_lock:
+                            seen.add(rel)
+                finally:
                     queue.task_done()
-                    return
-                abs_path, lang, is_doc = item
-                rel = await self._process_file(
-                    abs_path, lang, stats, is_doc=is_doc,
-                )
-                if rel is not None:
-                    async with seen_lock:
-                        seen.add(rel)
-                queue.task_done()
 
         # Run producer + N consumers concurrently.
         producer_task = asyncio.create_task(asyncio.to_thread(_producer_sync))
@@ -192,7 +207,10 @@ class Indexer:
             asyncio.create_task(_consumer()) for _ in range(n_workers)
         ]
         await producer_task
-        await asyncio.gather(*consumer_tasks)
+        # return_exceptions so a single sick worker doesn't tank the rest
+        # of the reindex; the per-worker try/finally above already guards
+        # task_done(), so gather is just collecting results.
+        await asyncio.gather(*consumer_tasks, return_exceptions=True)
 
         await self._gc_stale_paths(seen, stats)
         stats.elapsed_s = time.monotonic() - t0
@@ -398,10 +416,16 @@ class Indexer:
 
         # Empty file: purge any stale chunks and return. This is the only case
         # where we delete without a successful embed to replace the chunks.
+        # Phase 37 audit fix: wrap vec.delete in suppress to mirror the
+        # remove_path hardening — a single transient store failure shouldn't
+        # leave the file half-deleted.
         if not chunks:
             async with self._store_lock:
-                purged = self._vec.delete_by_path(rel)
-                stats.paths_purged += 1 if purged else 0
+                try:
+                    purged = self._vec.delete_by_path(rel)
+                    stats.paths_purged += 1 if purged else 0
+                except Exception as e:
+                    stats.errors.append(f"vec_delete:{rel}:{e}")
                 if self._lex is not None:
                     try:
                         self._lex.delete_by_path(rel)  # type: ignore[attr-defined]
@@ -440,26 +464,43 @@ class Indexer:
         # Only now do we delete stale chunks (source-of-truth semantics) and
         # insert the fresh ones. All store writes are serialized via the
         # store-lock so parallel workers can't race on Chroma/FTS/Kuzu.
+        # Phase 37 audit fix: track per-store success. Previously
+        # `vec.upsert` had no try/except so any Chroma hiccup propagated up,
+        # killing the consumer worker AND skipping `task_done()`. Worse,
+        # the hash registry was stamped unconditionally below, so a partial
+        # write left the file silently missing from search forever.
+        vec_ok = lex_ok = graph_ok = True
         async with self._store_lock:
-            purged = self._vec.delete_by_path(rel)
-            stats.paths_purged += 1 if purged else 0
+            try:
+                purged = self._vec.delete_by_path(rel)
+                stats.paths_purged += 1 if purged else 0
+            except Exception as e:
+                stats.errors.append(f"vec_delete:{rel}:{e}")
+                vec_ok = False
             if self._lex is not None:
                 try:
                     self._lex.delete_by_path(rel)  # type: ignore[attr-defined]
                 except Exception as e:
                     stats.errors.append(f"lex_delete:{rel}:{e}")
+                    lex_ok = False
             if self._graph is not None:
                 try:
                     self._graph.delete_by_path(rel)  # type: ignore[attr-defined]
                 except Exception as e:
                     stats.errors.append(f"graph_delete:{rel}:{e}")
+                    graph_ok = False
 
-            self._vec.upsert(chunks, vectors)
+            try:
+                self._vec.upsert(chunks, vectors)
+            except Exception as e:
+                stats.errors.append(f"vec_upsert:{rel}:{e}")
+                vec_ok = False
             if self._lex is not None:
                 try:
                     self._lex.upsert(chunks)  # type: ignore[attr-defined]
                 except Exception as e:
                     stats.errors.append(f"lex_upsert:{rel}:{e}")
+                    lex_ok = False
             if self._graph is not None:
                 try:
                     # Graph ingester reparses the file to get call-site edges
@@ -467,19 +508,25 @@ class Indexer:
                     self._graph.ingest(abs_path, rel, language)  # type: ignore[attr-defined]
                 except Exception as e:
                     stats.errors.append(f"graph_upsert:{rel}:{e}")
+                    graph_ok = False
 
-        # Stamp the content hash now that we've fully ingested. Doing it AFTER
-        # the upserts means a crash mid-embed leaves the registry pointing at
-        # the previous successfully-indexed content, so the next pass retries.
-        if self._hashes is not None:
+        # Stamp the content hash ONLY when every store accepted the write.
+        # Otherwise leave the hash unchanged so the next pass retries — that
+        # closes the partial-write window where a transient Kuzu lock would
+        # have left the file out of search results forever (the next pass
+        # would have hit `is_unchanged → skip` if we'd stamped the hash).
+        all_ok = vec_ok and lex_ok and graph_ok
+        if all_ok and self._hashes is not None:
             try:
                 self._hashes.upsert(rel, content)
             except Exception as e:
                 stats.errors.append(f"hash_upsert:{rel}:{e}")
 
-        stats.files_indexed += 1
-        stats.chunks_upserted += len(chunks)
-        log.debug("indexer.file", path=rel, chunks=len(chunks))
+        if all_ok:
+            stats.files_indexed += 1
+            stats.chunks_upserted += len(chunks)
+        log.debug("indexer.file", path=rel, chunks=len(chunks),
+                  all_ok=all_ok, vec_ok=vec_ok, lex_ok=lex_ok, graph_ok=graph_ok)
         return rel
 
 

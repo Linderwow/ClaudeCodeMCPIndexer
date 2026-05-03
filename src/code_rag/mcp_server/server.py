@@ -33,7 +33,6 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from code_rag.config import Settings, load_settings
-from code_rag.embedders.lm_studio import LMStudioEmbedder
 from code_rag.factory import (
     build_embedder,
     build_graph_store,
@@ -347,8 +346,20 @@ class ServerResources:
         # local rewrites by default; opt into LLM expansions by setting
         # `[query_rewriter].model` in config.toml. Returns None when
         # disabled, so the searcher silently falls back to literal-only.
-        from code_rag.factory import build_query_rewriter
+        from code_rag.factory import (
+            build_query_decomposer,
+            build_query_rewriter,
+            build_reflector,
+        )
         self.rewriter = build_query_rewriter(s)
+        # Phase 37-A: query decomposition (multi-part question splitting).
+        # Disabled by default; opt in via `[decompose].enabled = true` plus
+        # a chat model. Best-effort — null = pure single-arm search.
+        self.decomposer = build_query_decomposer(s)
+        # Phase 37-B: post-rerank reflection. Disabled by default; opt in
+        # via `[reflection].enabled = true` plus a chat model. Confidence-
+        # gated so confident queries pay no LLM cost.
+        self.reflector = build_reflector(s)
 
         # MCP server is purely a READER. Writes (reindex, ingest) happen via
         # the live watcher or the CLI. This avoids lock contention with the
@@ -358,12 +369,16 @@ class ServerResources:
             graph_store=self.graph,
             hyde_plan=hyde_plan,
             rewriter=self.rewriter,
+            decomposer=self.decomposer,
+            reflector=self.reflector,
         )
         log.info("mcp.resources.open",
                  embedder=self.embedder.model, dim=self.embedder.dim,
                  chunks=self.vec.count(),
                  hyde="on" if hyde_plan is not None else "off",
-                 rewriter="on" if self.rewriter is not None else "off")
+                 rewriter="on" if self.rewriter is not None else "off",
+                 decomposer="on" if self.decomposer is not None else "off",
+                 reflector="on" if self.reflector is not None else "off")
 
     async def close(self) -> None:
         if self.vec is not None:
@@ -384,6 +399,17 @@ class ServerResources:
                 await rewriter.aclose()
                 if rewriter._cache is not None:  # pyright: ignore[reportPrivateUsage]
                     rewriter._cache.close()  # pyright: ignore[reportPrivateUsage]
+        # Phase 37: tear down decomposer + reflector httpx clients.
+        decomposer = getattr(self, "decomposer", None)
+        if decomposer is not None:
+            from code_rag.retrieval.decompose import LMStudioQueryDecomposer
+            if isinstance(decomposer, LMStudioQueryDecomposer):
+                await decomposer.aclose()
+        reflector = getattr(self, "reflector", None)
+        if reflector is not None:
+            from code_rag.retrieval.reflection import LMStudioReflector
+            if isinstance(reflector, LMStudioReflector):
+                await reflector.aclose()
 
 
 # ---- Handler dispatch -----------------------------------------------------

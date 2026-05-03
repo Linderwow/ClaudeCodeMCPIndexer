@@ -96,7 +96,6 @@ async def health(_req: Request) -> JSONResponse:
 
     from code_rag.chroma_watchdog import probe_chroma
     from code_rag.util.proc_hygiene import (
-        is_watcher_alive,
         list_code_rag_processes,
         watcher_heartbeat_age_s,
     )
@@ -105,6 +104,11 @@ async def health(_req: Request) -> JSONResponse:
 
     # --- LM Studio ---
     base = s.embedder.base_url
+    # Phase 37 audit fix: previously `r` was only assigned inside the try
+    # body, so the duplicate-aliases probe below (line ~177) would raise
+    # UnboundLocalError if `_lms_status` itself raised. Default to a safe
+    # empty dict so the duplicate-aliases probe degrades cleanly.
+    r: dict[str, Any] = {}
     try:
         r = ops._lms_status(s)
         lms_ok = bool(r.get("server_up"))
@@ -243,6 +247,34 @@ async def unload_model(req: Request) -> JSONResponse:
     return JSONResponse(result.to_dict())
 
 
+async def eval_history(req: Request) -> JSONResponse:
+    """Phase 37-C: serve the eval-gate run history.
+
+    Reads `data/eval/history.jsonl` and returns:
+      {
+        "rows":  [...latest N rows in chronological order...],
+        "trend": {n_runs, deltas_pp, deltas_ms} (latest vs oldest)
+      }
+
+    Query params:
+      - `tail`: keep only the last N rows (default: 100)
+    """
+    s = _settings_or_500()
+    if isinstance(s, JSONResponse):
+        return s
+    from code_rag.eval.telemetry import history_path, read_history, trend_summary
+    try:
+        tail_param = req.query_params.get("tail", "100")
+        tail = max(1, min(10000, int(tail_param)))
+    except (TypeError, ValueError):
+        tail = 100
+    rows = read_history(history_path(s.paths.data_dir), tail=tail)
+    return JSONResponse({
+        "rows": rows,
+        "trend": trend_summary(rows),
+    })
+
+
 async def _maybe_json(req: Request) -> dict[str, Any]:
     try:
         b = await req.body()
@@ -288,6 +320,7 @@ def build_app() -> Starlette:
         Route("/api/stop/watcher",       endpoint=stop_watcher,    methods=["POST"]),
         Route("/api/models/load",        endpoint=load_model,      methods=["POST"]),
         Route("/api/models/unload",      endpoint=unload_model,    methods=["POST"]),
+        Route("/api/eval-history",       endpoint=eval_history,    methods=["GET"]),
         Mount("/static", app=StaticFiles(directory=str(_STATIC_DIR)), name="static"),
     ]
     middleware = [

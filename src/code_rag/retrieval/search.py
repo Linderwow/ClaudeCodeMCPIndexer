@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -96,6 +97,8 @@ class HybridSearcher:
         graph_store: GraphStore | None = None,
         hyde_plan: object | None = None,  # HydeRetrieverPlan, optional
         rewriter: object | None = None,   # LMStudioQueryRewriter, optional
+        decomposer: object | None = None, # Phase 37-A LMStudioQueryDecomposer
+        reflector: object | None = None,  # Phase 37-B LMStudioReflector
     ) -> None:
         self._embed = embedder
         self._vec = vector_store
@@ -111,6 +114,15 @@ class HybridSearcher:
         # identifiers). Composes with HyDE — both contribute arms. None =
         # pure literal search.
         self._rewriter = rewriter
+        # Phase 37-A query decomposer. Splits multi-part questions into
+        # 2-3 sub-queries, each becoming an extra retrieval arm. Heuristic
+        # gate skips the LLM call for short / single-part queries.
+        self._decomposer = decomposer
+        # Phase 37-B post-rerank reflector. Re-orders the top-K cross-
+        # encoder hits using a small chat model that scores how directly
+        # each chunk answers the query. Confidence-gated (skipped when
+        # cross-encoder top-1 is already strong).
+        self._reflector = reflector
 
     async def search(self, query: str, params: SearchParams) -> list[SearchHit]:
         """Back-compat entry point. Returns a bare list.
@@ -123,12 +135,14 @@ class HybridSearcher:
     async def search_full(self, query: str, params: SearchParams) -> SearchResponse:
         t0 = time.monotonic()
 
-        # Phase 30 + Phase 19 plan composition. Order:
-        #   1. Rewriter (if any) seeds the arm list with original + casing
+        # Phase 37-A + Phase 30 + Phase 19 plan composition. Order:
+        #   1. Decomposer (if any) splits multi-part queries into sub-
+        #      queries that each become their own retrieval arm.
+        #   2. Rewriter (if any) seeds the arm list with original + casing
         #      variants + LLM-suggested expansions.
-        #   2. HyDE (if any) appends a hypothetical-doc arm on NL queries.
-        # If neither is configured we fall back to the single-arm literal
-        # search — identical to pre-Phase-30 behavior.
+        #   3. HyDE (if any) appends a hypothetical-doc arm on NL queries.
+        # If none are configured we fall back to the single-arm literal
+        # search — identical to pre-Phase-19 behavior.
         plan: list[tuple[str, float]] = []
         if self._rewriter is not None:
             try:
@@ -138,6 +152,25 @@ class HybridSearcher:
                 log.warning("search.rewrite_fail", err=f"{type(e).__name__}: {e}")
         if not plan:
             plan = [(query, 1.0)]
+        # Phase 37-A: decomposition runs AFTER the rewriter so casing
+        # variants of the original query stay in the plan; sub-queries
+        # are appended without replacing them. The decomposer gates on
+        # multi-part-ness internally (returns just `original` otherwise).
+        if self._decomposer is not None:
+            try:
+                decomp = await self._decomposer.decompose(query)  # type: ignore[attr-defined]
+                literal_norm = query.strip().lower()
+                # `decomp.arms` always includes the original; skip it
+                # (already in `plan`) and append only the new sub-queries.
+                seen = {arm_text.strip().lower() for arm_text, _w in plan}
+                for arm_text, arm_w in decomp.arms:
+                    norm = arm_text.strip().lower()
+                    if norm == literal_norm or norm in seen:
+                        continue
+                    plan.append((arm_text, arm_w))
+                    seen.add(norm)
+            except Exception as e:
+                log.warning("search.decompose_fail", err=f"{type(e).__name__}: {e}")
         if self._hyde is not None:
             try:
                 hyde_arms = await self._hyde.plan(query)  # type: ignore[attr-defined]
@@ -153,24 +186,42 @@ class HybridSearcher:
         # 1) Kick off vector queries (one per plan arm) + lexical (single,
         #    using the LITERAL query — BM25 over a hypothetical chunk would
         #    add noise without recall lift).
+        # Phase 37 audit fix: previously a failure in the embedder or any
+        # vector-query future would orphan the lexical task and other arms
+        # ("Task was destroyed but it is pending"). Wrap the awaits so any
+        # raise inside one await still cancels + drains the rest.
         embed_inputs = [arm_text for arm_text, _w in plan]
         q_vec_task = asyncio.create_task(self._embed.embed(embed_inputs))
         lex_task = asyncio.create_task(
             asyncio.to_thread(self._lex.query, query, params.k_lexical),
         )
 
-        q_vecs = await q_vec_task
-        where = self._build_where(params)
+        vec_tasks: list[asyncio.Task[Sequence[SearchHit]]] = []
+        try:
+            q_vecs = await q_vec_task
+            where = self._build_where(params)
 
-        # Run vector queries for each plan arm in parallel.
-        vec_tasks = [
-            asyncio.create_task(asyncio.to_thread(
-                self._vec.query, qv, params.k_vector, where,
-            ))
-            for qv in q_vecs
-        ]
-        vec_hits_per_arm = [self._apply_filters(await t, params) for t in vec_tasks]
-        lex_hits = self._apply_filters(await lex_task, params)
+            # Run vector queries for each plan arm in parallel.
+            vec_tasks = [
+                asyncio.create_task(asyncio.to_thread(
+                    self._vec.query, qv, params.k_vector, where,
+                ))
+                for qv in q_vecs
+            ]
+            vec_results = await asyncio.gather(*vec_tasks, return_exceptions=False)
+            vec_hits_per_arm = [self._apply_filters(r, params) for r in vec_results]
+            lex_hits = self._apply_filters(await lex_task, params)
+        except BaseException:
+            # Cancel any in-flight tasks so we don't leak coroutines on the
+            # error path; suppress within the cleanup so the original
+            # exception is what propagates to the caller.
+            for t in (q_vec_task, lex_task, *vec_tasks):
+                if not t.done():
+                    t.cancel()
+            for t in (q_vec_task, lex_task, *vec_tasks):
+                with contextlib.suppress(BaseException):
+                    await t
+            raise
 
         # For symmetry with the previous logging shape, expose the union
         # candidate count of all arms as `vec_hits`.
@@ -213,6 +264,15 @@ class HybridSearcher:
         #    hits come back with their fusion score intact.
         rerank_in = fused[: params.k_rerank_in]
         reranked = await self._rerank.rerank(query, rerank_in, params.k_final)
+
+        # 4b) Phase 37-B reflection. Confidence-gated inside the reflector:
+        # if the cross-encoder top-1 is already strong, this is a no-op.
+        # Best-effort — any LLM failure leaves the rerank order intact.
+        if self._reflector is not None and reranked:
+            try:
+                reranked = await self._reflector.reflect(query, list(reranked))  # type: ignore[attr-defined]
+            except Exception as e:
+                log.warning("search.reflect_fail", err=f"{type(e).__name__}: {e}")
 
         # 5) Confidence gate.
         no_match = False

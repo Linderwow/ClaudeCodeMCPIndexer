@@ -91,13 +91,15 @@ class GraphExtractor:
     """
 
     def __init__(self) -> None:
-        langs = _load_languages()
-        self._parsers: dict[str, Parser] = {k: Parser(v) for k, v in langs.items()}
+        # Phase 37 audit fix: per-call Parser. See chunking/treesitter.py for
+        # context — tree-sitter Parser is not reentrant; sharing across
+        # async-to-thread workers can corrupt the tree or segfault.
+        self._langs = _load_languages()
 
     def extract(
         self, abs_path: Path, rel_path: str, language: str,
     ) -> tuple[list[SymbolRef], list[Edge]]:
-        if language not in self._parsers:
+        if language not in self._langs:
             return [], []
         try:
             src = abs_path.read_bytes()
@@ -107,7 +109,9 @@ class GraphExtractor:
         if not src.strip():
             return [], []
 
-        tree = self._parsers[language].parse(src)
+        # Per-call Parser — see __init__ comment.
+        parser = Parser(self._langs[language])
+        tree = parser.parse(src)
         if tree is None:
             return [], []
 

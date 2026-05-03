@@ -2,7 +2,7 @@
 
 Local code + doc RAG, exposed as an MCP server for Claude Code.
 
-**Stack:** Python 3.11 · tree-sitter · Chroma · Kuzu · SQLite FTS5 · LM Studio (qwen3-embedding-4b / qwen3-reranker-4b) · watchdog · MCP stdio.
+**Stack:** Python 3.11 · tree-sitter · Chroma · Kuzu · SQLite FTS5 · LM Studio (qwen3-embedding-4b) · BAAI/bge-reranker-v2-m3 (sentence-transformers cross-encoder) · watchdog · MCP stdio.
 
 **Languages indexed:** Python, C#, TypeScript (+ TSX), JavaScript (+ JSX, MJS, CJS). Markdown / PDF / DOCX / HTML / CSS / SCSS as docs.
 
@@ -17,16 +17,21 @@ Private — proprietary. No code leaves the machine.
 | **Hybrid retrieval** | Vector (Chroma) + BM25 (SQLite FTS5), RRF fusion, cross-encoder rerank (optional) |
 | **AST-aware chunks** | Tree-sitter per language; symbol-hierarchical names like `UserService.getById` |
 | **Call graph** | Kuzu stores `defines` / `calls` / `imports` edges — `get_callers`, `get_callees` in one hop |
+| **Doc ingest** | Markdown (heading-aware), PDF (`pypdf`), DOCX (`python-docx`), HTML / CSS / SCSS as plaintext |
 | **Live watcher** | watchdog with 500 ms debounce; incremental reindex per file edit |
-| **MCP server** | stdio transport; 7 tools registered for Claude Code |
+| **MCP server** | stdio transport; 9 tools registered for Claude Code |
 | **Autostart (Windows)** | windowless `pythonw` via Task Scheduler; survives logon |
-| **Eval harness** | Recall@1/3/10, MRR, p50/p95 latency over a JSON fixture |
+| **Self-healing** | Phase 36: chroma-heal subprocess probe, watcher heartbeat + auto-respawn, LM Studio duplicate-alias cleanup, scheduled defrag |
+| **Query expansion** | Phase 30 rewriter (snake/camel/spaced + optional LLM synonyms) · Phase 37-A decomposition (multi-part question splitting) · Phase 19 HyDE (hypothetical-doc retrieval, intent-gated) |
+| **Post-rerank reflection** | Phase 37-B optional LLM relevance check, blended with cross-encoder, confidence-gated |
+| **Eval harness** | Recall@1/3/10, MRR, NDCG@10, p50/p95 latency over a JSON fixture; Phase 26 regression gate; Phase 37-C continuous telemetry to `data/eval/history.jsonl` + dashboard trend |
 
 ## MCP tools exposed
 
 | Tool | Purpose |
 |---|---|
 | `search_code` | Hybrid search (vector + BM25 + rerank) over code + docs |
+| `search_code_anchored` | Phase 21: hybrid search + 1-hop graph neighborhood attached to each hit |
 | `get_chunk_text` | Full text of a chunk by id (after a truncated `search_code` hit) |
 | `get_symbol` | Find a symbol by exact name in the graph index |
 | `get_callers` | Who calls this symbol — 1-hop reverse call edge |
@@ -115,7 +120,7 @@ roots = [
 
 `~` and `${VAR}` are expanded at load time, so the config file is portable across machines / accounts. You can also override the active config file via the `CODE_RAG_CONFIG` env var.
 
-Start LM Studio and load **text-embedding-qwen3-embedding-4b** (and optionally **qwen3-reranker-4b**) on the local server (default `http://localhost:1234`).
+Start LM Studio and load **text-embedding-qwen3-embedding-4b** on the local server (default `http://localhost:1234`). Reranking runs in-process via `BAAI/bge-reranker-v2-m3` (sentence-transformers cross-encoder; install via `pip install -e ".[cross-encoder]"`).
 
 Confirm the pipeline is live:
 
@@ -139,7 +144,7 @@ Reindex is idempotent — same content produces the same chunk id, so reruns are
 code-rag search "how is OnBarUpdate wired in the strategy" -k 8
 code-rag search "UserService" --lang typescript
 code-rag callers getById
-code-rag get-symbol OnBarUpdate
+code-rag symbol OnBarUpdate
 code-rag index-stats
 ```
 
@@ -302,7 +307,7 @@ src/code_rag/
   graph/              extractor, ingest
   retrieval/          search (hybrid), fusion (RRF)
   watcher/            live (watchdog)
-  mcp_server/         stdio server with 7 tools
+  mcp_server/         stdio server with 9 tools
   eval/               harness + fixtures
   install.py          one-shot installer (probe → index → wire Claude → autostart)
   autostart_bootstrap.py   Task Scheduler entry point

@@ -160,6 +160,58 @@ class LmJanitorConfig(BaseModel):
     interval_s: float = 60.0
 
 
+class DecomposeConfig(BaseModel):
+    """Phase 37-A: query decomposition.
+
+    Splits a multi-part question (e.g. "how does login flow into session
+    refresh and logout?") into 2-3 sub-queries that each become an extra
+    retrieval arm. Heuristic gate skips the LLM for short / single-part
+    queries, so the latency cost is paid only when decomposition can
+    plausibly help.
+
+    `model` blank disables this feature even when `enabled=true` — same
+    pattern as the rewriter.
+    """
+    enabled: bool = False
+    base_url: str = ""               # blank = use embedder.base_url
+    model: str = ""                   # blank = disabled
+    timeout_s: float = 8.0
+
+
+class ReflectionConfig(BaseModel):
+    """Phase 37-B: post-retrieval reflection.
+
+    After cross-encoder rerank, an LLM scores how directly each top-K
+    candidate answers the question. The score is blended with the
+    rerank score: `final = α * rerank + (1-α) * reflection`.
+
+    Heuristic gate skips reflection when the cross-encoder is already
+    confident (top-1 score ≥ skip_if_top1_above), so this only fires on
+    ambiguous queries.
+
+    `model` blank disables the feature.
+    """
+    enabled: bool = False
+    base_url: str = ""               # blank = use embedder.base_url
+    model: str = ""                   # blank = disabled
+    timeout_s: float = 15.0
+    blend_alpha: float = 0.6         # weight on rerank (rest on reflection)
+    skip_if_top1_above: float = 0.7  # confidence gate
+    top_k: int = 8
+
+
+class TelemetryConfig(BaseModel):
+    """Phase 37-C: continuous retrieval telemetry.
+
+    When enabled, every `code-rag eval-gate` invocation appends one row
+    to `data/eval/history.jsonl`. The dashboard plots the trend so
+    quality drift is visible over weeks.
+
+    Disable to keep eval-gate strictly stateless.
+    """
+    enabled: bool = True
+
+
 class Settings(BaseModel):
     paths: PathsConfig
     ignore: IgnoreConfig = Field(default_factory=IgnoreConfig)
@@ -174,6 +226,9 @@ class Settings(BaseModel):
     mcp: McpConfig = Field(default_factory=McpConfig)
     query_rewriter: QueryRewriterConfig = Field(default_factory=QueryRewriterConfig)
     lm_janitor: LmJanitorConfig = Field(default_factory=LmJanitorConfig)
+    decompose: DecomposeConfig = Field(default_factory=DecomposeConfig)
+    reflection: ReflectionConfig = Field(default_factory=ReflectionConfig)
+    telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
 
     # Resolved absolute paths to vector DB dir, kuzu DB dir, FTS file.
     @property

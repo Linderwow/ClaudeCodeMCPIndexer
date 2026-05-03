@@ -1,6 +1,6 @@
-"""Tests for the Phase 17/18/20 scaffolds.
+"""Tests for the Phase 17/18 scaffolds.
 
-These three phases need user-supervised model downloads / system installs
+These two phases need user-supervised model downloads / system installs
 before they can ship for real. Tests here verify the SCAFFOLDING is
 correctly wired so the eventual flip-on is config-only:
 
@@ -9,13 +9,13 @@ correctly wired so the eventual flip-on is config-only:
   * Phase 18 (SCIP semantic indexing): adapter contract is in place; the
     loader fails LOUDLY rather than silently returning empty when the
     parser isn't installed.
-  * Phase 20 (ColBERT late-interaction): NullLateInteraction returns []
-    cleanly; build_colbert_retriever raises with instructions when the
-    library isn't installed.
+
+Phase 20 (ColBERT late-interaction) was deleted as orphaned scaffolding
+in the Phase 37 audit — its module had zero callers and the
+`code-rag colbert-index` CLI command its docstring referenced never
+existed. Resurrect from git history if late-interaction work resumes.
 """
 from __future__ import annotations
-
-import asyncio
 
 import pytest
 
@@ -31,11 +31,6 @@ from code_rag.graph.scip import (
     ScipSymbol,
     iter_symbols_and_edges,
     load_scip_index,
-)
-from code_rag.retrieval.colbert import (
-    ColBERTConfig,
-    NullLateInteraction,
-    build_colbert_retriever,
 )
 
 # ---- P17 -------------------------------------------------------------------
@@ -106,19 +101,5 @@ def test_p18_iter_symbols_and_edges_maps_minimal_record() -> None:
     assert edges[0].kind == "calls"
 
 
-# ---- P20 -------------------------------------------------------------------
-
-
-def test_p20_null_late_interaction_returns_empty() -> None:
-    """The NullLateInteraction fallback is what HybridSearcher uses when
-    ColBERT isn't installed/configured. Must always return []."""
-    null = NullLateInteraction()
-    out = asyncio.run(null.search("anything", k=10))
-    assert out == []
-    asyncio.run(null.close())
-
-
-def test_p20_build_colbert_retriever_raises_with_install_instructions() -> None:
-    cfg = ColBERTConfig(index_dir="/nonexistent")
-    with pytest.raises(RuntimeError, match="not installed"):
-        build_colbert_retriever(cfg)
+# Phase 20 (ColBERT) tests deleted — the module they exercised was
+# orphaned scaffolding with no production wiring; see file docstring above.

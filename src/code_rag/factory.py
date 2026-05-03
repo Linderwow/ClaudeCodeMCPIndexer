@@ -15,6 +15,7 @@ from code_rag.interfaces.vector_store import VectorStore
 from code_rag.rerankers.lm_chat import LMStudioChatReranker
 from code_rag.rerankers.lm_studio import LMStudioReranker
 from code_rag.rerankers.noop import NoopReranker
+
 # Cross-encoder reranker is OPTIONAL (requires sentence-transformers). We
 # import lazily inside build_reranker so the factory itself never fails to
 # import even if the optional dep isn't installed.
@@ -138,6 +139,42 @@ def build_query_rewriter(settings: Settings) -> object | None:
         model=qr.model or "",
         cache=cache,
         timeout_s=qr.timeout_s,
+    )
+
+
+def build_query_decomposer(settings: Settings) -> object | None:
+    """Phase 37-A: build the query decomposer or return None if disabled.
+
+    Disabled iff `decompose.enabled=false` OR `decompose.model` is blank
+    (the heuristic gate also short-circuits when the query isn't multi-part,
+    so leaving the decomposer enabled but unused is cheap).
+    """
+    dc = settings.decompose
+    if not dc.enabled or not dc.model:
+        return None
+    from code_rag.retrieval.decompose import LMStudioQueryDecomposer
+    base_url = dc.base_url or settings.embedder.base_url
+    return LMStudioQueryDecomposer(
+        base_url=base_url,
+        model=dc.model,
+        timeout_s=dc.timeout_s,
+    )
+
+
+def build_reflector(settings: Settings) -> object | None:
+    """Phase 37-B: build the post-rerank reflector or return None if disabled."""
+    rf = settings.reflection
+    if not rf.enabled or not rf.model:
+        return None
+    from code_rag.retrieval.reflection import LMStudioReflector
+    base_url = rf.base_url or settings.embedder.base_url
+    return LMStudioReflector(
+        base_url=base_url,
+        model=rf.model,
+        timeout_s=rf.timeout_s,
+        top_k=rf.top_k,
+        blend_alpha=rf.blend_alpha,
+        skip_if_top1_above=rf.skip_if_top1_above,
     )
 
 

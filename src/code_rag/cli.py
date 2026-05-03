@@ -16,7 +16,9 @@ from code_rag.factory import (
     build_embedder,
     build_graph_store,
     build_lexical_store,
+    build_query_decomposer,
     build_query_rewriter,
+    build_reflector,
     build_reranker,
     build_vector_store,
 )
@@ -840,7 +842,8 @@ def lms_enforce_settings(ctx: click.Context, quiet: bool, apply: bool) -> None:
     Run hourly via Task Scheduler (`code-rag-lms-enforce`). Idempotent:
     when settings are correct, costs ~20ms.
     """
-    settings = ctx.obj["settings"]
+    # ctx.obj["settings"] resolved upstream — settings not needed here, the
+    # canonical model-load knobs live in lms_ctl._LMS_LOAD_SETTINGS.
     from code_rag.lms_ctl import _LMS_LOAD_SETTINGS, find_lms
 
     loc = find_lms()
@@ -1169,7 +1172,8 @@ def reap_cmd(ctx: click.Context, kill: bool, quiet: bool) -> None:
             for p in list_code_rag_processes():
                 if p.kind in ("watcher", "watch_cli"):
                     kill_pid(p.pid)
-            import time as _t; _t.sleep(2)
+            import time as _t
+            _t.sleep(2)
             respawn_watcher_via_schtasks()
     if not quiet:
         click.echo(f"watcher: {watcher_action}")
@@ -1240,12 +1244,17 @@ def eval_gate(
         )
         vec.open(meta)
         lex.open()
-        # Phase 30: wire the query rewriter so eval measures the SAME
-        # pipeline production uses (rewriter on or off based on config).
+        # Phase 30 + Phase 37: wire rewriter + decomposer + reflector so
+        # eval measures the SAME pipeline production uses.
         rewriter = build_query_rewriter(settings)
+        decomposer = build_query_decomposer(settings)
+        reflector = build_reflector(settings)
         try:
             searcher = HybridSearcher(
-                embedder, vec, lex, reranker, rewriter=rewriter,
+                embedder, vec, lex, reranker,
+                rewriter=rewriter,
+                decomposer=decomposer,
+                reflector=reflector,
             )
             cases = load_cases(fixture_path)
             index_meta_dict = json.loads(settings.index_meta_path.read_text("utf-8"))
@@ -1256,6 +1265,27 @@ def eval_gate(
                 index_meta=index_meta_dict,
             )
             click.echo(json.dumps(report.summary(), indent=2))
+
+            # Phase 37-C: append a row to the telemetry history JSONL so
+            # quality drift is visible across runs.
+            if settings.telemetry.enabled:
+                from code_rag.eval.telemetry import append_run, history_path
+                append_run(
+                    history_path(settings.paths.data_dir),
+                    report,
+                    index_summary={
+                        "embedder": {
+                            "kind": settings.embedder.kind,
+                            "model": embedder.model,
+                            "dim": embedder.dim,
+                        },
+                        "reranker": {
+                            "kind": settings.reranker.kind,
+                            "model": settings.reranker.model,
+                        },
+                    },
+                    label=label or "eval-gate",
+                )
 
             if write_baseline:
                 baseline_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1317,6 +1347,15 @@ def eval_gate(
                     await rewriter.aclose()
                     if rewriter._cache is not None:  # pyright: ignore[reportPrivateUsage]
                         rewriter._cache.close()  # pyright: ignore[reportPrivateUsage]
+            # Phase 37: close decomposer / reflector http clients.
+            if decomposer is not None:
+                from code_rag.retrieval.decompose import LMStudioQueryDecomposer
+                if isinstance(decomposer, LMStudioQueryDecomposer):
+                    await decomposer.aclose()
+            if reflector is not None:
+                from code_rag.retrieval.reflection import LMStudioReflector
+                if isinstance(reflector, LMStudioReflector):
+                    await reflector.aclose()
 
     sys.exit(asyncio.run(_run()))
 

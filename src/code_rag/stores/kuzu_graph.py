@@ -77,8 +77,14 @@ class KuzuGraphStore(GraphStore):
                  read_only=self._read_only, retried=last_err is not None)
 
     def close(self) -> None:
-        self._conn = None
-        self._db = None
+        # Phase 37 audit fix: take the lock before nulling so a concurrent
+        # `_run` can't observe `self._conn=None` mid-tear-down and crash
+        # with `AttributeError: 'NoneType' object has no attribute 'execute'`.
+        # Realistic race: shutdown path or fsck calling close() while a
+        # search thread is in flight on the read connection.
+        with self._lock:
+            self._conn = None
+            self._db = None
 
     def _init_schema(self) -> None:
         stmts = [
