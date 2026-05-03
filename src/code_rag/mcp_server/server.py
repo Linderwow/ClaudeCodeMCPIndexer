@@ -271,7 +271,32 @@ class ServerResources:
         self.graph = build_graph_store(s, read_only=True)
         self.reranker = build_reranker(s)
 
-        await self.embedder.health()
+        # Phase 36-G: retry embedder.health() with backoff. A single transient
+        # LM Studio 500 (which happens during model swaps, GPU pressure spikes,
+        # or post-crash auto-restart) would otherwise abort the entire MCP
+        # boot, surface to Claude Code as "Server disconnected", and require
+        # the user to manually /mcp reconnect. Three attempts with 2-4-8s
+        # backoff covers the 30s window LM Studio needs to recover from
+        # most transient hiccups, while still failing fast if LM Studio is
+        # genuinely down.
+        last_err: Exception | None = None
+        for attempt, delay in enumerate((0, 2, 4, 8), start=1):
+            if delay > 0:
+                await asyncio.sleep(delay)
+            try:
+                await self.embedder.health()
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                log.warning(
+                    "mcp.embedder_health_retry",
+                    attempt=attempt, err=f"{type(e).__name__}: {e}",
+                )
+        if last_err is not None:
+            raise RuntimeError(
+                f"embedder.health() failed after retries: {last_err}"
+            ) from last_err
         meta = ChromaVectorStore.build_meta(
             embedder_kind=s.embedder.kind,
             embedder_model=self.embedder.model,
