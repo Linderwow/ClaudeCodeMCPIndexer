@@ -91,6 +91,17 @@ globs = [
     "**/package-lock.json",
     "**/yarn.lock",
     "**/pnpm-lock.yaml",
+
+    # --- Transient atomic-write artifacts (Phase 36-H) ---
+    # Tools that atomically write files (editor saves, telemetry
+    # writers, etc.) create + rename + delete .tmp / .swap files. The
+    # watcher used to fire a delete-event for each one, hammering Kuzu
+    # with lock conflicts. These are never useful to index.
+    "**/*.tmp",
+    "**/*.swp",                   # vim swap files
+    "**/*.swo",
+    "**/*~",                      # editor backup files
+    "**/.#*",                     # emacs lockfiles
 ]
 
 [embedder]

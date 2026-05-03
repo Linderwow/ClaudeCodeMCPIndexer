@@ -328,12 +328,24 @@ class Indexer:
         return None
 
     async def remove_path(self, rel_path: str) -> None:
-        """Purge all chunks for a file that no longer exists (watcher delete event)."""
-        self._vec.delete_by_path(rel_path)
+        """Purge all chunks for a file that no longer exists (watcher delete event).
+
+        Phase 36-H: each store's delete is wrapped in suppress() so a
+        Kuzu lock conflict (common when MCP servers hold the read-only
+        graph handle) doesn't abort the whole removal — vector + lexical
+        + hash purges still happen, graph just retains a stale entry
+        until the next successful delete-by-path. A flood of .tmp file
+        events used to spam the watcher's error log because graph errors
+        were uncaught here, while _process_file already had this guard.
+        """
+        with contextlib.suppress(Exception):
+            self._vec.delete_by_path(rel_path)
         if self._lex is not None:
-            self._lex.delete_by_path(rel_path)  # type: ignore[attr-defined]
+            with contextlib.suppress(Exception):
+                self._lex.delete_by_path(rel_path)  # type: ignore[attr-defined]
         if self._graph is not None:
-            self._graph.delete_by_path(rel_path)  # type: ignore[attr-defined]
+            with contextlib.suppress(Exception):
+                self._graph.delete_by_path(rel_path)  # type: ignore[attr-defined]
         # Drop the file-hash row so a future re-creation of this rel_path is
         # never falsely "skip-unchanged"-ed against stale content.
         if self._hashes is not None:
