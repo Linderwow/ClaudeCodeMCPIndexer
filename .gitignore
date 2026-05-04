@@ -29,3 +29,10 @@ desktop.ini
 
 # --- Claude Code local state -------------------------------------------------
 .claude/
+
+# Phase 42: transient debug outputs from diagnostic runs
+chroma-heal-dry.txt
+eval-out.txt
+eval-err.txt
+eval-result.txt
+eval-help.txt
