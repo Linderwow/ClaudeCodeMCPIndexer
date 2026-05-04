@@ -862,10 +862,34 @@ def lms_enforce_settings(ctx: click.Context, quiet: bool, apply: bool) -> None:
         click.echo(f"FAIL  lms ps: {r.stderr[:200]}", err=True)
         sys.exit(2)
 
+    # Phase 43 fix: `lms ps` is whitespace-aligned with 2+ spaces between
+    # columns and a SIZE column that contains a space ("2.50 GB"). The old
+    # parser used `line.split()` (single whitespace), so cols[4] became
+    # "GB" — `int()` raised ValueError and every model was silently
+    # skipped. Result: enforce-settings claimed all-match even when the
+    # real CONTEXT was 10× our pref. Match the dashboard's
+    # `_parse_lms_ps` pattern: split on 2+ spaces.
+    import re as _re
     actions: list[str] = []
-    for line in r.stdout.splitlines():
-        cols = line.split()
-        if len(cols) < 5 or cols[0] in ("IDENTIFIER", "---"):
+    lines = [ln.rstrip() for ln in r.stdout.splitlines() if ln.strip()]
+    header_idx = next(
+        (i for i, ln in enumerate(lines) if ln.startswith("IDENTIFIER")),
+        None,
+    )
+    if header_idx is None:
+        if not quiet:
+            click.echo("lms ps: empty (no models loaded)")
+        sys.exit(0)
+    headers = [h.strip().lower() for h in _re.split(r"\s{2,}", lines[header_idx])]
+    try:
+        ctx_col = headers.index("context")
+    except ValueError:
+        click.echo(f"FAIL  lms ps header missing CONTEXT: {headers}", err=True)
+        sys.exit(2)
+
+    for line in lines[header_idx + 1:]:
+        cols = _re.split(r"\s{2,}", line)
+        if len(cols) <= ctx_col:
             continue
         ident = cols[0]
         # Skip aliases (`<model>:N`) — those are reaper's job.
@@ -876,10 +900,8 @@ def lms_enforce_settings(ctx: click.Context, quiet: bool, apply: bool) -> None:
         if prefs is None:
             continue
         want_par, want_ctx = prefs
-        # `lms ps` columns: IDENTIFIER MODEL STATUS SIZE CONTEXT PARALLEL ...
-        # CONTEXT is at index 4 (0-based).
         try:
-            actual_ctx = int(cols[4])
+            actual_ctx = int(cols[ctx_col])
         except (ValueError, IndexError):
             continue
         if actual_ctx == want_ctx:
@@ -889,16 +911,25 @@ def lms_enforce_settings(ctx: click.Context, quiet: bool, apply: bool) -> None:
         )
         actions.append(action)
         if apply:
+            # Phase 43: explicit utf-8 + errors=replace. lms.exe emits
+            # non-cp1252 chars (status spinners, em-dashes); without this
+            # the subprocess reader thread crashes with UnicodeDecodeError
+            # on Windows. The reload still succeeds but the traceback is
+            # ugly noise in the dashboard log.
             subprocess.run(
                 [str(loc.path), "unload", ident],
-                capture_output=True, text=True, timeout=15.0, check=False,
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
+                timeout=15.0, check=False,
             )
             subprocess.run(
                 [str(loc.path), "load", ident,
                  "--parallel", str(want_par),
                  "--context-length", str(want_ctx),
                  "--gpu", "max", "-y"],
-                capture_output=True, text=True, timeout=120.0, check=False,
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
+                timeout=120.0, check=False,
             )
             action += "  → RELOADED"
 
