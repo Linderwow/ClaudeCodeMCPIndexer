@@ -47,6 +47,73 @@ def is_intentionally_stopped(data_dir: Path) -> bool:
     return marker_path(data_dir).exists()
 
 
+def _system_boot_time_unix() -> float | None:
+    """Return wall-clock unix timestamp of the last system boot, or None
+    if it can't be determined on this platform.
+
+    Windows: uses GetTickCount64() from kernel32 — returns milliseconds
+    since boot. Wall-clock boot time = now - tickcount/1000. Zero deps,
+    no subprocess, microsecond cost.
+
+    Linux: reads `btime` from /proc/stat.
+
+    Other platforms: returns None — caller falls back to "stay stopped"
+    (safe default vs. resuming against user intent).
+    """
+    import sys
+    import time
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ms = ctypes.windll.kernel32.GetTickCount64()  # type: ignore[attr-defined]
+            return time.time() - (ms / 1000.0)
+        except (OSError, AttributeError):
+            return None
+    if sys.platform.startswith("linux"):
+        try:
+            with open("/proc/stat") as f:
+                for line in f:
+                    if line.startswith("btime "):
+                        return float(line.split()[1])
+        except OSError:
+            return None
+    return None
+
+
+def marker_predates_last_boot(data_dir: Path) -> bool | None:
+    """Return True iff the marker exists AND was created BEFORE the last
+    system boot — i.e. the user pressed Stop All in some PRIOR session and
+    the PC has since been rebooted, so it's safe to clear and resume.
+
+    Returns False iff the marker exists and was created in the current
+    boot session (Stop All happened after the last reboot — user intent
+    is "stay stopped").
+
+    Returns None iff the marker doesn't exist (caller can short-circuit).
+
+    Phase 42: this lets `autostart_bootstrap` distinguish "AtLogon fire
+    after reboot" (clear-and-proceed) from "Task Scheduler auto-restart
+    after Stop All terminated the process" (bail-and-respect-intent).
+    The previous implementation cleared the marker on every fire, which
+    broke the Stop All contract any time TaskScheduler's RestartCount
+    policy kicked in.
+    """
+    p = marker_path(data_dir)
+    if not p.exists():
+        return None
+    try:
+        marker_mtime = p.stat().st_mtime
+    except OSError:
+        # If we can't stat the marker, fall back to "stay stopped" — that's
+        # the safer default vs. resuming when the user said don't.
+        return False
+    boot_time = _system_boot_time_unix()
+    if boot_time is None:
+        # Can't determine boot time → safer default is "stay stopped".
+        return False
+    return marker_mtime < boot_time
+
+
 def mark_intentionally_stopped(data_dir: Path, *, reason: str = "dashboard.stop_all") -> bool:
     """Create the marker. Returns True iff the file is on disk after the
     call (covers both the new-write and already-exists cases)."""

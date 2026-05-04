@@ -1,0 +1,11 @@
+{
+  "probed": {
+    "ok": true,
+    "elapsed_s": 2.4219999999986612,
+    "counts": {
+      "code_rag_v1_9ca4594b": 88079
+    },
+    "timed_out": false
+  },
+  "healed": false
+}

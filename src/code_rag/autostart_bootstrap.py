@@ -85,20 +85,38 @@ async def _run() -> int:
     _plain_log(autostart_log, "bootstrap starting")
     log.info("autostart.begin", python=sys.executable)
 
-    # Phase 39: clear any leftover Stop All intent marker. Semantics: the
-    # user said "stay stopped until I hit Start All OR restart the PC".
-    # The autostart task fires `AtLogon`, so a PC restart -> we run -> we
-    # delete the marker before continuing. Without this, the watcher
-    # would refuse to come back even after a reboot.
+    # Phase 39 + Phase 42: respect the Stop All marker.
+    #
+    # The user contract is: "stay stopped until I hit Start All OR restart
+    # the PC". The previous implementation assumed this task only fires
+    # AtLogon, so it cleared the marker on every fire. False — the task
+    # has `-RestartCount 5 -RestartInterval 1 min`, so when Stop All
+    # terminates the python process Task Scheduler interprets the non-zero
+    # exit as "task crashed" and respawns the action up to 5 times.
+    # Clearing the marker on every fire defeats Stop All any time that
+    # restart policy kicks in.
+    #
+    # Phase 42 fix: only clear the marker when it predates the last system
+    # boot (proves a real reboot happened since Stop All). Otherwise: bail
+    # immediately. The watcher stays dead until Start All clears the
+    # marker explicitly.
     from code_rag.util.stop_marker import (
         clear_intentionally_stopped,
         is_intentionally_stopped,
+        marker_predates_last_boot,
     )
-    if (is_intentionally_stopped(settings.paths.data_dir)
-            and clear_intentionally_stopped(settings.paths.data_dir,
-                                            reason="autostart_bootstrap.logon")):
-        _plain_log(autostart_log,
-                   "cleared stale Stop All marker (PC restart resumes service)")
+    if is_intentionally_stopped(settings.paths.data_dir):
+        if marker_predates_last_boot(settings.paths.data_dir):
+            clear_intentionally_stopped(settings.paths.data_dir,
+                                        reason="autostart_bootstrap.post_reboot")
+            _plain_log(autostart_log,
+                       "cleared stale Stop All marker (PC restart resumes service)")
+        else:
+            _plain_log(autostart_log,
+                       "Stop All marker present and post-Stop-All boot — "
+                       "respecting user intent, bailing without starting watcher")
+            log.info("autostart.bail.stop_marker_in_session")
+            return
 
     # 2) Ensure LM Studio is up with the embedder loaded.
     # Pre-load any auxiliary chat/rerank models so the first MCP query after
