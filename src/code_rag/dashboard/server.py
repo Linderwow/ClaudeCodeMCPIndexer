@@ -18,6 +18,7 @@ to the LAN.
 """
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -65,35 +66,18 @@ async def status(_req: Request) -> JSONResponse:
     return JSONResponse(ops.get_status(s))
 
 
-async def health(_req: Request) -> JSONResponse:
-    """Phase 36-E: real health probe (not just "process running").
+def _build_health_payload(s: Any) -> dict[str, Any]:
+    """All sync probes that build the /api/health response, isolated so
+    they can run inside `asyncio.to_thread` without blocking the event
+    loop.
 
-    Returns a structured score with per-component status:
-
-        {
-          "overall":  "ok" | "degraded" | "critical"
-          "checks": {
-              "lm_studio":         {"ok": bool, "detail": "..."}
-              "watcher_alive":     {"ok": bool, "detail": "pid=N age_min=M"}
-              "watcher_heartbeat": {"ok": bool, "detail": "age_s=N"}
-              "chroma":            {"ok": bool, "detail": "count=N elapsed_ms=M"}
-              "vram":              {"ok": bool, "detail": "X / Y GB (Z%)"}
-              "lms_duplicates":    {"ok": bool, "detail": "no aliases" | ":N alias..."}
-          }
-        }
-
-    Each check is fast (<2s). Use this from the dashboard for true
-    yellow/red badges instead of just "process running" green.
-
-    "critical" iff any of: lm_studio down, watcher dead, chroma stuck.
-    "degraded" iff: heartbeat stale, vram > 90%, duplicate aliases.
+    Phase 36-E shape preserved verbatim. Phase 37 audit fix: previously
+    these probes ran inline in the async handler, so any slow probe
+    (chroma subprocess, nvidia-smi spawn, sync httpx) wedged the event
+    loop and queued every subsequent request — observed as 6+
+    Established connections piling on port 7321 with the dashboard
+    appearing dead.
     """
-    s = _settings_or_500()
-    if isinstance(s, JSONResponse):
-        return s
-
-    from concurrent.futures import ThreadPoolExecutor
-
     from code_rag.chroma_watchdog import probe_chroma
     from code_rag.util.proc_hygiene import (
         list_code_rag_processes,
@@ -101,13 +85,7 @@ async def health(_req: Request) -> JSONResponse:
     )
 
     checks: dict[str, dict[str, Any]] = {}
-
-    # --- LM Studio ---
     base = s.embedder.base_url
-    # Phase 37 audit fix: previously `r` was only assigned inside the try
-    # body, so the duplicate-aliases probe below (line ~177) would raise
-    # UnboundLocalError if `_lms_status` itself raised. Default to a safe
-    # empty dict so the duplicate-aliases probe degrades cleanly.
     r: dict[str, Any] = {}
     try:
         r = ops._lms_status(s)
@@ -121,35 +99,35 @@ async def health(_req: Request) -> JSONResponse:
     except Exception as e:
         checks["lm_studio"] = {"ok": False, "detail": f"probe error: {e}"}
 
-    # --- Watcher process + heartbeat ---
-    procs = list_code_rag_processes()
-    watcher_procs = [p for p in procs if p.kind in ("watcher", "watch_cli")]
-    alive = bool(watcher_procs)
-    checks["watcher_alive"] = {
-        "ok": alive,
-        "detail": (
-            f"pid={watcher_procs[0].pid}" if alive else "no watcher process"
-        ),
-    }
+    try:
+        procs = list_code_rag_processes()
+        watcher_procs = [p for p in procs if p.kind in ("watcher", "watch_cli")]
+        alive = bool(watcher_procs)
+        checks["watcher_alive"] = {
+            "ok": alive,
+            "detail": (
+                f"pid={watcher_procs[0].pid}" if alive else "no watcher process"
+            ),
+        }
+    except Exception as e:
+        checks["watcher_alive"] = {"ok": False, "detail": f"probe error: {e}"}
 
-    hb_age = watcher_heartbeat_age_s(s.paths.data_dir / "watcher.heartbeat")
+    try:
+        hb_age = watcher_heartbeat_age_s(s.paths.data_dir / "watcher.heartbeat")
+    except Exception:
+        hb_age = None
     if hb_age is None:
-        hb_ok = False
-        hb_detail = "no heartbeat file"
+        checks["watcher_heartbeat"] = {"ok": False, "detail": "no heartbeat file"}
     elif hb_age > 120:
-        hb_ok = False
-        hb_detail = f"stale ({hb_age:.0f}s)"
+        checks["watcher_heartbeat"] = {"ok": False, "detail": f"stale ({hb_age:.0f}s)"}
     else:
-        hb_ok = True
-        hb_detail = f"fresh ({hb_age:.0f}s)"
-    checks["watcher_heartbeat"] = {"ok": hb_ok, "detail": hb_detail}
+        checks["watcher_heartbeat"] = {"ok": True, "detail": f"fresh ({hb_age:.0f}s)"}
 
-    # --- Chroma probe (subprocess-isolated, 5s timeout for quick health) ---
-    def _chroma_probe() -> dict[str, Any]:
-        return probe_chroma(s.chroma_dir, timeout_s=5.0)
-
-    with ThreadPoolExecutor(max_workers=1) as ex:
-        chroma_res = ex.submit(_chroma_probe).result()
+    # Subprocess-isolated 5s timeout for the Chroma probe.
+    try:
+        chroma_res = probe_chroma(s.chroma_dir, timeout_s=5.0)
+    except Exception as e:
+        chroma_res = {"ok": False, "error": str(e)}
     if chroma_res.get("ok"):
         total = sum(chroma_res.get("counts", {}).values())
         checks["chroma"] = {
@@ -164,8 +142,10 @@ async def health(_req: Request) -> JSONResponse:
                        else f"error: {chroma_res.get('error', 'unknown')}"),
         }
 
-    # --- VRAM pressure ---
-    gpu = ops._gpu_status_via_nvidia_smi()
+    try:
+        gpu = ops._gpu_status_via_nvidia_smi()
+    except Exception:
+        gpu = None
     if gpu is None:
         checks["vram"] = {"ok": True, "detail": "no GPU detected"}
     else:
@@ -176,7 +156,6 @@ async def health(_req: Request) -> JSONResponse:
             "detail": f"{used:.1f} / {total:.1f} GB ({pct:.0f}%)",
         }
 
-    # --- LM Studio duplicate aliases ---
     try:
         loaded_ids = [m["id"] for m in r.get("models_loaded", [])]
         dup_aliases = [m for m in loaded_ids if ":" in m and m.split(":")[1].isdigit()]
@@ -188,13 +167,69 @@ async def health(_req: Request) -> JSONResponse:
     except Exception:
         checks["lms_duplicates"] = {"ok": True, "detail": "n/a"}
 
-    # --- Overall ---
     critical_keys = {"lm_studio", "watcher_alive", "chroma"}
     critical_fail = any(not checks[k]["ok"] for k in critical_keys if k in checks)
     any_fail = any(not v["ok"] for v in checks.values())
     overall = "critical" if critical_fail else ("degraded" if any_fail else "ok")
+    return {"overall": overall, "checks": checks}
 
-    return JSONResponse({"overall": overall, "checks": checks})
+
+async def health(_req: Request) -> JSONResponse:
+    """Phase 36-E + Phase 37 audit fix: real health probe.
+
+    Returns a structured score with per-component status:
+
+        {
+          "overall":  "ok" | "degraded" | "critical"
+          "checks": {
+              "lm_studio":         {"ok": bool, "detail": "..."}
+              "watcher_alive":     {"ok": bool, "detail": "pid=N"}
+              "watcher_heartbeat": {"ok": bool, "detail": "age_s=N"}
+              "chroma":            {"ok": bool, "detail": "count=N elapsed_ms=M"}
+              "vram":              {"ok": bool, "detail": "X / Y GB (Z%)"}
+              "lms_duplicates":    {"ok": bool, "detail": "no aliases" | ":N alias..."}
+          }
+        }
+
+    "critical" iff any of: lm_studio down, watcher dead, chroma stuck.
+    "degraded" iff: heartbeat stale, vram > 90%, duplicate aliases.
+
+    Phase 37 audit fix: probes run in a worker thread so a slow probe
+    can't block the event loop and queue subsequent dashboard requests.
+    A `wait_for(20s)` ceiling guarantees the handler always answers.
+    """
+    s = _settings_or_500()
+    if isinstance(s, JSONResponse):
+        return s
+
+    try:
+        payload = await asyncio.wait_for(
+            asyncio.to_thread(_build_health_payload, s),
+            timeout=20.0,
+        )
+    except asyncio.TimeoutError:
+        return JSONResponse({
+            "overall": "critical",
+            "checks": {
+                "probe_pipeline": {
+                    "ok": False,
+                    "detail": "health probes exceeded 20s — investigate "
+                              "chroma / nvidia-smi / lm_studio probe latency",
+                },
+            },
+        })
+    except Exception as e:
+        return JSONResponse({
+            "overall": "critical",
+            "checks": {
+                "probe_pipeline": {
+                    "ok": False,
+                    "detail": f"probe error: {type(e).__name__}: {e}",
+                },
+            },
+        })
+
+    return JSONResponse(payload)
 
 
 async def start_all(_req: Request) -> JSONResponse:
