@@ -63,7 +63,23 @@ async def status(_req: Request) -> JSONResponse:
     s = _settings_or_500()
     if isinstance(s, JSONResponse):
         return s
-    return JSONResponse(ops.get_status(s))
+    # Phase 41: same thread-isolation fix as /api/health. ops.get_status
+    # walks the process list, hits LM Studio's HTTP API, and probes nvidia-
+    # smi — all sync. Running it inline blocks the event loop and queues
+    # every other request behind it (action POSTs end up disabled-button-
+    # forever from the user's POV). 30s ceiling — get_status itself uses
+    # 5s timeouts internally, but task-scheduler RPC can sporadically
+    # take 10-15s on a busy box.
+    try:
+        payload = await asyncio.wait_for(
+            asyncio.to_thread(ops.get_status, s),
+            timeout=30.0,
+        )
+    except asyncio.TimeoutError:
+        return JSONResponse(
+            {"error": "status probes exceeded 30s"}, status_code=504,
+        )
+    return JSONResponse(payload)
 
 
 def _build_health_payload(s: Any) -> dict[str, Any]:
@@ -232,11 +248,21 @@ async def health(_req: Request) -> JSONResponse:
     return JSONResponse(payload)
 
 
+# Phase 41: action endpoints fan out to PowerShell + LM Studio HTTP +
+# subprocess kills, all sync. Running them inline in the async handler
+# blocks the event loop for the full duration (Stop All ~5s, Start All
+# ~10-30s) and queues every other request — frontend ends up showing
+# disabled buttons "forever" because the response never returns while
+# /api/status polls keep arriving and piling up. Wrapping each call in
+# `asyncio.to_thread` lets the loop service status polls + cancel the
+# stuck-button state cleanly.
+
 async def start_all(_req: Request) -> JSONResponse:
     s = _settings_or_500()
     if isinstance(s, JSONResponse):
         return s
-    return JSONResponse(ops.start_all(s).to_dict())
+    res = await asyncio.to_thread(ops.start_all, s)
+    return JSONResponse(res.to_dict())
 
 
 async def stop_all(req: Request) -> JSONResponse:
@@ -245,26 +271,33 @@ async def stop_all(req: Request) -> JSONResponse:
         return s
     body = await _maybe_json(req)
     stop_lms = bool(body.get("stop_lm_studio", False))
-    return JSONResponse(ops.stop_all(s, stop_lm_studio=stop_lms).to_dict())
+    res = await asyncio.to_thread(
+        ops.stop_all, s, stop_lm_studio=stop_lms,
+    )
+    return JSONResponse(res.to_dict())
 
 
 async def start_lms(_req: Request) -> JSONResponse:
     s = _settings_or_500()
     if isinstance(s, JSONResponse):
         return s
-    return JSONResponse(ops.start_lms_server(s).to_dict())
+    res = await asyncio.to_thread(ops.start_lms_server, s)
+    return JSONResponse(res.to_dict())
 
 
 async def stop_lms(_req: Request) -> JSONResponse:
-    return JSONResponse(ops.stop_lms_server().to_dict())
+    res = await asyncio.to_thread(ops.stop_lms_server)
+    return JSONResponse(res.to_dict())
 
 
 async def start_watcher(_req: Request) -> JSONResponse:
-    return JSONResponse(ops.start_watcher_task().to_dict())
+    res = await asyncio.to_thread(ops.start_watcher_task)
+    return JSONResponse(res.to_dict())
 
 
 async def stop_watcher(_req: Request) -> JSONResponse:
-    return JSONResponse(ops.stop_watcher_task().to_dict())
+    res = await asyncio.to_thread(ops.stop_watcher_task)
+    return JSONResponse(res.to_dict())
 
 
 async def load_model(req: Request) -> JSONResponse:
@@ -272,13 +305,18 @@ async def load_model(req: Request) -> JSONResponse:
     model = str(body.get("model", "")).strip()
     if not model:
         return JSONResponse({"error": "missing 'model' in body"}, status_code=400)
-    return JSONResponse(ops.load_model(model, ops._LMS_LOAD_TIMEOUT).to_dict())
+    # Phase 41: lms-cli loads can take 10-30s — must run in a thread.
+    res = await asyncio.to_thread(ops.load_model, model, ops._LMS_LOAD_TIMEOUT)
+    return JSONResponse(res.to_dict())
 
 
 async def unload_model(req: Request) -> JSONResponse:
     body = await _maybe_json(req)
     model = str(body.get("model", "")).strip()
-    result = ops.unload_all_models() if not model else ops.unload_model(model)
+    if not model:
+        result = await asyncio.to_thread(ops.unload_all_models)
+    else:
+        result = await asyncio.to_thread(ops.unload_model, model)
     return JSONResponse(result.to_dict())
 
 
