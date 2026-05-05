@@ -246,6 +246,64 @@ def _settings_for(model: str) -> tuple[int | None, int | None]:
     return _LMS_LOAD_SETTINGS.get(model, (None, None))
 
 
+def loaded_context_length(lms_path: Path | str, model_id: str) -> int | None:
+    """Phase 44: parse `lms ps` and return the actual loaded CONTEXT for
+    `model_id`, or None if the model isn't loaded / ps output can't be
+    parsed. Uses the Phase 43 column-aware splitter so the SIZE column's
+    embedded space ("2.50 GB") doesn't shift indexes.
+    """
+    import re as _re
+    try:
+        r = subprocess.run(
+            [str(lms_path), "ps"],
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+            timeout=10.0, check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if r.returncode != 0:
+        return None
+    lines = [ln.rstrip() for ln in r.stdout.splitlines() if ln.strip()]
+    header_idx = next(
+        (i for i, ln in enumerate(lines) if ln.startswith("IDENTIFIER")),
+        None,
+    )
+    if header_idx is None:
+        return None
+    headers = [h.strip().lower() for h in _re.split(r"\s{2,}", lines[header_idx])]
+    try:
+        ctx_col = headers.index("context")
+    except ValueError:
+        return None
+    for line in lines[header_idx + 1:]:
+        cols = _re.split(r"\s{2,}", line)
+        if len(cols) <= ctx_col:
+            continue
+        if cols[0] != model_id:
+            continue
+        try:
+            return int(cols[ctx_col])
+        except ValueError:
+            return None
+    return None
+
+
+def model_loaded_with_correct_ctx(lms_path: Path | str, model_id: str) -> bool:
+    """True iff `model_id` is loaded AND its CONTEXT matches our Phase 33
+    pref. False means: either not loaded, or loaded with the wrong ctx
+    (caller should unload + reload).
+
+    Models without a Phase 33 pref entry are accepted as-is — we don't
+    have an opinion about their settings.
+    """
+    _, want_ctx = _settings_for(model_id)
+    if want_ctx is None:
+        return True   # no opinion → accept whatever's loaded
+    actual = loaded_context_length(lms_path, model_id)
+    return actual == want_ctx
+
+
 def ensure_lm_studio_ready(
     base_url: str,
     embedder_model: str,
@@ -266,17 +324,42 @@ def ensure_lm_studio_ready(
     to keep KV-cache pre-allocation small. See `_LMS_LOAD_SETTINGS` above.
     """
     steps: list[str] = []
-
-    # Fast path: everything the caller asked for is already loaded.
-    if model_is_loaded(base_url, embedder_model) and all(
-        model_is_loaded(base_url, m) for m in extra_models
-    ):
-        steps.append(f"already-ready: {embedder_model}")
-        for m in extra_models:
-            steps.append(f"already-ready: {m}")
-        return BootstrapResult(ok=True, steps=steps)
-
     loc = find_lms()
+
+    # Fast path: everything the caller asked for is already loaded
+    # WITH the correct ctx. Phase 44: previously the fast path skipped
+    # the load command whenever a model was loaded — even with the
+    # wrong settings. LM Studio's auto-load-on-server-start uses stock
+    # defaults (e.g. CONTEXT=40960 for our 4B embedder), so on every
+    # boot we'd skip our `--context-length 4096` and waste ~10 GB of
+    # KV-cache VRAM. Now we verify the ctx matches Phase 33 prefs
+    # before claiming "already-ready".
+    if loc.path is not None:
+        all_models = (embedder_model, *extra_models)
+        if (all(model_is_loaded(base_url, m) for m in all_models)
+                and all(model_loaded_with_correct_ctx(loc.path, m) for m in all_models)):
+            for m in all_models:
+                steps.append(f"already-ready: {m}")
+            return BootstrapResult(ok=True, steps=steps)
+        # If any model is loaded with the wrong ctx, unload it so the
+        # reload below picks up our settings. (Loaded-but-wrong-ctx
+        # models don't fall out of the slow path on their own; lms load
+        # is a no-op when the model is already in the loaded state.)
+        for m in all_models:
+            if (model_is_loaded(base_url, m)
+                    and not model_loaded_with_correct_ctx(loc.path, m)):
+                actual = loaded_context_length(loc.path, m)
+                _, want = _settings_for(m)
+                steps.append(
+                    f"unloading {m} for reload: ctx={actual} → want {want}",
+                )
+                subprocess.run(
+                    [str(loc.path), "unload", m],
+                    capture_output=True, text=True,
+                    encoding="utf-8", errors="replace",
+                    timeout=15.0, check=False,
+                )
+    # `loc` was already resolved above for the Phase 44 settings check.
     if loc.path is None:
         return BootstrapResult(
             ok=False, steps=steps,

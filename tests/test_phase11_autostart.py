@@ -96,12 +96,20 @@ def _install_mock_server(monkeypatch: pytest.MonkeyPatch, loaded: list[str]) -> 
 
 def test_ensure_ready_fast_path_when_already_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_mock_server(monkeypatch, ["qwen3-embedding-4b"])
-    # find_lms / lms load / start_server must NOT be called.
+    # Phase 44: the fast path now ALSO verifies the loaded ctx matches
+    # Phase 33 prefs. find_lms() is now expected (we need lms.exe to
+    # run `lms ps`), but `start_server` and `load_model` must still be
+    # no-ops — the fast path doesn't reload an already-correct model.
+    monkeypatch.setattr(
+        lms_ctl, "find_lms",
+        lambda: lms_ctl.LmsLocation(path=Path("lms.exe"), found_via="test"),
+    )
     def fail_if_called(*a: Any, **kw: Any) -> Any:
-        raise AssertionError("must not run lms subprocess when model already loaded")
-    monkeypatch.setattr(lms_ctl, "find_lms", fail_if_called)
+        raise AssertionError("must not load/start when model already loaded with correct ctx")
     monkeypatch.setattr(lms_ctl, "start_server", fail_if_called)
     monkeypatch.setattr(lms_ctl, "load_model", fail_if_called)
+    # qwen3-embedding-4b has no entry in _LMS_LOAD_SETTINGS, so the
+    # ctx-check returns True without calling `lms ps` — fast path holds.
 
     r = ensure_lm_studio_ready("http://localhost:1234/v1", "qwen3-embedding-4b")
     assert r.ok
