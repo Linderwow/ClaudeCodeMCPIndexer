@@ -131,12 +131,18 @@ def test_correct_ctx_true_when_model_has_no_pref() -> None:
         ) is True
 
 
-def test_correct_ctx_false_when_pref_exists_but_model_not_loaded() -> None:
-    """Phase 33-tracked model not in ps output. We have an opinion about
-    its ctx; absent value can't match it."""
+def test_correct_ctx_returns_true_when_model_not_in_ps() -> None:
+    """Phase 45 semantics correction: when a Phase 33-tracked model
+    isn't in `lms ps`, we don't claim "wrong ctx" — we just don't know.
+    Returning True here lets the boot fast path skip an unnecessary
+    unload+reload cascade that, on the embedder, was creating <model>:2
+    duplicate aliases. See test_phase45_no_duplicate_alias for the
+    cascade tests; this test pins the semantic flip."""
     with patch("code_rag.lms_ctl.subprocess.run",
                return_value=_FakeProc(_PS_EMPTY)):
-        # 4B embedder pref is 4096; nothing loaded → no match.
+        # 4B embedder pref is 4096; ps is empty → ctx=None → we don't
+        # know → True (be conservative, don't trigger an unload of
+        # something we can't see).
         assert model_loaded_with_correct_ctx(
             "lms.exe", "text-embedding-qwen3-embedding-4b",
-        ) is False
+        ) is True

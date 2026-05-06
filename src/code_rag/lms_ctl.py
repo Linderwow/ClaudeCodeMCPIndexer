@@ -290,17 +290,40 @@ def loaded_context_length(lms_path: Path | str, model_id: str) -> int | None:
 
 
 def model_loaded_with_correct_ctx(lms_path: Path | str, model_id: str) -> bool:
-    """True iff `model_id` is loaded AND its CONTEXT matches our Phase 33
-    pref. False means: either not loaded, or loaded with the wrong ctx
-    (caller should unload + reload).
+    """True iff we should LEAVE the model alone (either correct ctx or
+    we don't have enough info to second-guess). False means we have
+    DEFINITIVE evidence the ctx is wrong and the caller should unload
+    + reload.
 
-    Models without a Phase 33 pref entry are accepted as-is — we don't
-    have an opinion about their settings.
+    Returns True when:
+      - The model has no Phase 33 pref entry (we don't have an opinion).
+      - The model isn't in `lms ps` output at all (ctx=None). Phase 45:
+        previously this returned False, which made the boot fast path
+        trigger an unload+reload of an idle model — which then made the
+        slow path issue `lms load` for the EMBEDDER too, and LM Studio
+        responded by creating a `<model>:2` duplicate alias. The
+        observed cascade today: HyDE model
+        `qwen2.5-coder-7b-instruct` is in /v1/models (configured) but
+        not in `lms ps` (not actively occupying a CUDA stream) → ctx=None
+        → Phase 44 saw "wrong ctx" → unload+reload → embedder duplicated.
+
+    Returns False ONLY when:
+      - The model has a Phase 33 pref AND `lms ps` shows it loaded with
+        a DIFFERENT integer context length (e.g. 40960 vs our 4096).
+
+    Conservative-by-design: if we can't tell, we don't touch it. The
+    hourly enforce-settings task acts on the same `lms ps` data, so
+    this blind spot is symmetric — not a regression.
     """
     _, want_ctx = _settings_for(model_id)
     if want_ctx is None:
         return True   # no opinion → accept whatever's loaded
     actual = loaded_context_length(lms_path, model_id)
+    if actual is None:
+        # Phase 45: model not in `lms ps` (or ps unparseable). Don't
+        # claim "wrong ctx" — we just don't know. Treat as OK so the
+        # boot fast path doesn't trigger spurious unloads.
+        return True
     return actual == want_ctx
 
 

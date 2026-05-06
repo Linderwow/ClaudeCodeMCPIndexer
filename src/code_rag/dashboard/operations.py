@@ -475,11 +475,45 @@ def start_lms_server(settings: Settings) -> StepResult:
 
 
 def load_model(model: str, timeout_s: float) -> StepResult:
+    """Issue `lms load <model>`. Phase 45: idempotent fast-path skip
+    when the model is already loaded with the correct Phase 33 ctx.
+
+    Why this matters: LM Studio's `lms load <name>` is NOT idempotent
+    when the model is already in any loaded state. Instead of being a
+    no-op, LM Studio creates a `<name>:N` duplicate ALIAS that occupies
+    its own VRAM (~3 GB for the 4B embedder). Two cascades observed:
+
+      1. Dashboard "Start All" → ensure_lm_studio_ready had reported
+         the model already loaded → start_all called load_model anyway
+         to "make sure" → 103-second LM Studio timeout + duplicate :2.
+
+      2. Watcher autostart_bootstrap → fast path's ctx-check returned
+         False on a missing-from-`lms ps` HyDE model → slow path issued
+         `lms load` for the embedder too → duplicate :2.
+
+    Phase 45 fix: short-circuit when ctx matches Phase 33 prefs. If
+    we don't have a pref OR the model isn't currently in `lms ps`,
+    fall through to the actual `lms load` (preserves the load-on-cold
+    path for first-boot).
+    """
     t0 = time.monotonic()
     loc = find_lms()
     if loc.path is None:
         return StepResult(f"load_model({model})", False, "lms.exe not found",
                           (time.monotonic() - t0) * 1000)
+    # Phase 45: skip the redundant `lms load` if the model is already
+    # loaded with the correct Phase 33 ctx — `lms load` would create a
+    # duplicate :N alias instead of being a no-op.
+    from code_rag.lms_ctl import _LMS_LOAD_SETTINGS, loaded_context_length
+    _, want_ctx = _LMS_LOAD_SETTINGS.get(model, (None, None))
+    if want_ctx is not None:
+        actual_ctx = loaded_context_length(loc.path, model)
+        if actual_ctx == want_ctx:
+            return StepResult(
+                f"load_model({model})", True,
+                f"already loaded with ctx={actual_ctx} — skipped redundant load",
+                (time.monotonic() - t0) * 1000,
+            )
     try:
         r = subprocess.run(
             [str(loc.path), "load", model],
