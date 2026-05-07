@@ -406,7 +406,10 @@ def _index_status(settings: Settings) -> dict[str, Any]:
 # ---- start operations -------------------------------------------------------
 
 
-def start_all(settings: Settings) -> CompositeResult:
+_VRAM_GUARD_THRESHOLD = 0.50   # bail if more than this fraction is already used
+
+
+def start_all(settings: Settings, *, force: bool = False) -> CompositeResult:
     """Bring the whole stack up.
 
     Order matters: LM Studio first (the watcher needs the embedder), then
@@ -414,8 +417,46 @@ def start_all(settings: Settings) -> CompositeResult:
 
     Phase 39: also clears the `data/.stopped` intent marker so the reaper
     resumes its normal auto-respawn-on-crash behavior.
+
+    Phase 47: if more than 50% of GPU VRAM is already used by other
+    processes (ComfyUI, COD, browsers with hardware accel, etc.),
+    Start All BAILS with an actionable message rather than blasting
+    in and OOM-ing the embedder load. The user observed today that
+    Start All on a half-full GPU produces a 109-second `lms load`
+    timeout with "Unknown error" — that's LM Studio failing to allocate
+    KV-cache space. Force-override via `force=True` (dashboard query
+    param `?force=1`) when the user explicitly wants to proceed anyway.
     """
     res = CompositeResult()
+
+    # Phase 47: VRAM safety gate — runs FIRST so we don't even clear
+    # the stop marker if we're going to refuse anyway. If nvidia-smi
+    # is unavailable we proceed (no GPU detected → no risk → don't
+    # block CPU-only setups).
+    if not force:
+        gpu = _gpu_status_via_nvidia_smi()
+        if gpu is not None:
+            used = float(gpu.get("vram_used_gb", 0))
+            total = max(1.0, float(gpu.get("vram_total_gb", 1)))
+            frac = used / total
+            if frac > _VRAM_GUARD_THRESHOLD:
+                threshold_pct = int(_VRAM_GUARD_THRESHOLD * 100)
+                detail = (
+                    f"VRAM at {frac*100:.0f}% ({used:.1f}/{total:.1f} GB) — "
+                    f"refusing to start with > {threshold_pct}% already used. "
+                    f"Free GPU memory first (close ComfyUI / games / browser "
+                    f"tabs), or pass force=true to override."
+                )
+                res.add(StepResult(
+                    "vram_guard", False, detail, duration_ms=0.0,
+                ))
+                return res
+            res.add(StepResult(
+                "vram_guard", True,
+                f"VRAM at {frac*100:.0f}% ({used:.1f}/{total:.1f} GB) — OK to proceed",
+                duration_ms=0.0,
+            ))
+
     # Phase 39: clear stop intent BEFORE starting anything else, so the
     # reaper (or daily redeploy) doesn't see a transient state where
     # the watcher is alive but the marker still says "stay stopped".

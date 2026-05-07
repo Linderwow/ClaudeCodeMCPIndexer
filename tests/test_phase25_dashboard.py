@@ -319,7 +319,10 @@ def test_start_all_runs_steps_in_order(
     ))
     monkeypatch.setattr(ops, "start_watcher_task", rec_step("start_watcher_task"))
 
-    res = ops.start_all(s)
+    # Phase 47: bypass the >50% VRAM guard — this test verifies step
+    # ordering, not the guard (which has its own dedicated tests in
+    # test_phase47_vram_guard.py).
+    res = ops.start_all(s, force=True)
     assert res.ok
     # Embedder loaded first, then chat reranker, then watcher.
     assert calls == [

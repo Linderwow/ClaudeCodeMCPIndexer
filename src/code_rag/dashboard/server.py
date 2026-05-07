@@ -257,11 +257,18 @@ async def health(_req: Request) -> JSONResponse:
 # `asyncio.to_thread` lets the loop service status polls + cancel the
 # stuck-button state cleanly.
 
-async def start_all(_req: Request) -> JSONResponse:
+async def start_all(req: Request) -> JSONResponse:
     s = _settings_or_500()
     if isinstance(s, JSONResponse):
         return s
-    res = await asyncio.to_thread(ops.start_all, s)
+    # Phase 47: allow ?force=1 (or a JSON body { "force": true }) to
+    # bypass the >50% VRAM guard. Default off — guard refuses Start
+    # All on a half-full GPU because that's how lms load OOMs.
+    force = (req.query_params.get("force", "").lower() in ("1", "true", "yes"))
+    if not force:
+        body = await _maybe_json(req)
+        force = bool(body.get("force", False))
+    res = await asyncio.to_thread(ops.start_all, s, force=force)
     return JSONResponse(res.to_dict())
 
 
