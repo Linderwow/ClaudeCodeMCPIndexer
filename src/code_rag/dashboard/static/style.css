@@ -311,3 +311,64 @@ code { font-family: var(--mono); font-size: 12px; color: var(--text-mute); }
 .log .line.err      { color: #ff9a96; }
 .log .line.info     { color: #79bcff; }
 .log .line .ts      { color: var(--text-dim); margin-right: 8px; }
+
+/* ---- Phase 50: Unified Command Center ---- */
+.projects {
+  margin: 24px 18px 0;
+}
+.projects > .card-header {
+  margin-bottom: 12px;
+}
+.projects-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 16px;
+}
+.project-card .card-body {
+  padding: 12px 16px 16px;
+}
+.project-card .subhead {
+  margin: 14px 0 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+}
+.proj-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-mute);
+}
+.proj-table th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+  padding: 4px 6px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.proj-table td {
+  padding: 3px 6px;
+  border-bottom: 1px solid #1a1f29;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.proj-table tr:last-child td {
+  border-bottom: none;
+}
+.proj-table .cmd-cell {
+  max-width: 240px;
+  color: var(--text-dim);
+  font-size: 10px;
+}
+.proj-table .state-running   { color: #9ad7a4; }
+.proj-table .state-disabled  { color: var(--text-dim); opacity: 0.5; }
+.proj-table .state-warn      { color: #ff9a96; }
+.proj-table .hidden-ok       { color: #9ad7a4; text-align: center; }
+.proj-table .hidden-warn     { color: #ffd166; text-align: center; }
+.kv.error { color: #ff9a96; padding: 6px 0; }

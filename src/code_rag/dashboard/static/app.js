@@ -281,6 +281,149 @@
   function pausePolling() { paused = true; }
   function resumePolling() { paused = false; }
 
+  // ---- Phase 50: Unified Command Center — projects panel ----
+  // Polls /api/projects every 5s (heavier than /api/status — runs ~6
+  // PowerShell cmdlets to enumerate scheduled tasks across 3 projects).
+  // Renders three project cards: tasks table + processes table.
+  const PROJECTS_POLL_MS = 5000;
+  let projectsTimer = null;
+
+  function fmtRepeat(r) {
+    if (!r) return '—';
+    const m = String(r).match(/^PT(\d+)([HMS])$/);
+    if (m) {
+      const v = m[1], u = m[2];
+      if (u === 'M') return `${v} min`;
+      if (u === 'H') return `${v} h`;
+      if (u === 'S') return `${v} s`;
+    }
+    if (r === 'P1D') return 'daily';
+    return r;
+  }
+
+  function fmtAge(s) {
+    if (!s || s < 60) return `${s|0}s`;
+    if (s < 3600) return `${(s/60)|0}m`;
+    if (s < 86400) return `${(s/3600).toFixed(1)}h`;
+    return `${(s/86400).toFixed(1)}d`;
+  }
+
+  function fmtLastRun(iso) {
+    if (!iso) return '—';
+    try {
+      const d = new Date(iso);
+      const now = new Date();
+      const ageS = (now - d) / 1000;
+      if (ageS < 60) return `${ageS|0}s ago`;
+      if (ageS < 3600) return `${(ageS/60)|0}m ago`;
+      if (ageS < 86400) return `${(ageS/3600).toFixed(1)}h ago`;
+      return d.toLocaleDateString();
+    } catch { return '—'; }
+  }
+
+  function projectCard(project) {
+    const card = document.createElement('article');
+    card.className = 'card project-card';
+    card.id = `project-${project.id}`;
+
+    const taskCount = project.tasks.length;
+    const procCount = project.processes.length;
+    const runningProcs = project.processes.filter(p => p.age_s > 0).length;
+    const runningTasks = project.tasks.filter(t => t.state === 'Running').length;
+    const headerSummary = `${runningTasks} task running · ${runningProcs} process${runningProcs === 1 ? '' : 'es'}`;
+
+    let html = `
+      <header class="card-header">
+        <h2>${escapeHtml(project.label)}</h2>
+        <span class="status-pill">${headerSummary}</span>
+      </header>
+      <div class="card-body">
+    `;
+
+    if (project.error) {
+      html += `<div class="kv error">probe error: ${escapeHtml(project.error)}</div>`;
+    }
+
+    // Tasks
+    html += `<h3 class="subhead">Scheduled tasks (${taskCount})</h3>`;
+    if (!taskCount) {
+      html += `<div class="kv small"><em>none</em></div>`;
+    } else {
+      html += `<table class="proj-table"><thead><tr><th>Name</th><th>State</th><th>Hidden</th><th>Repeat</th><th>Last run</th><th>Exit</th></tr></thead><tbody>`;
+      for (const t of project.tasks) {
+        const stateCls = t.state === 'Running' ? 'state-running'
+                       : t.state === 'Disabled' ? 'state-disabled' : '';
+        const hiddenIcon = t.hidden ? '✓' : '⚠';
+        const hiddenCls = t.hidden ? 'hidden-ok' : 'hidden-warn';
+        const lastResult = t.last_result === 0 ? '0' : (t.last_result == null ? '—' : String(t.last_result));
+        const lastResultCls = t.last_result === 0 ? '' : (t.last_result == null ? '' : 'state-warn');
+        html += `<tr>
+          <td title="${escapeHtml(t.exe)}">${escapeHtml(t.name)}</td>
+          <td class="${stateCls}">${escapeHtml(t.state)}</td>
+          <td class="${hiddenCls}">${hiddenIcon}</td>
+          <td>${escapeHtml(fmtRepeat(t.repeat))}</td>
+          <td>${escapeHtml(fmtLastRun(t.last_run))}</td>
+          <td class="${lastResultCls}">${escapeHtml(lastResult)}</td>
+        </tr>`;
+      }
+      html += `</tbody></table>`;
+    }
+
+    // Processes
+    html += `<h3 class="subhead">Live processes (${procCount})</h3>`;
+    if (!procCount) {
+      html += `<div class="kv small"><em>none running</em></div>`;
+    } else {
+      html += `<table class="proj-table"><thead><tr><th>PID</th><th>Name</th><th>RAM</th><th>Age</th><th>Cmd</th></tr></thead><tbody>`;
+      for (const p of project.processes) {
+        html += `<tr>
+          <td>${p.pid}</td>
+          <td>${escapeHtml(p.name)}</td>
+          <td>${p.ram_mb} MB</td>
+          <td>${escapeHtml(fmtAge(p.age_s))}</td>
+          <td class="cmd-cell" title="${escapeHtml(p.cmd_preview)}">${escapeHtml(p.cmd_preview)}</td>
+        </tr>`;
+      }
+      html += `</tbody></table>`;
+    }
+
+    html += '</div>';
+    card.innerHTML = html;
+    return card;
+  }
+
+  async function refreshProjects() {
+    try {
+      const data = await getJSON('/api/projects');
+      const grid = $('projects-grid');
+      if (!grid) return;
+      grid.innerHTML = '';
+      for (const p of (data.projects || [])) {
+        grid.appendChild(projectCard(p));
+      }
+      const status = $('projects-status');
+      if (status) {
+        const total = (data.projects || []).reduce(
+          (acc, p) => acc + p.processes.length, 0,
+        );
+        status.textContent = `${total} live process${total === 1 ? '' : 'es'}`;
+        status.className = 'status-pill ok';
+      }
+    } catch (e) {
+      const status = $('projects-status');
+      if (status) {
+        status.textContent = 'probe failed';
+        status.className = 'status-pill err';
+      }
+      logLine(`projects probe failed: ${e.message}`, 'warn');
+    }
+  }
+
+  function startProjectsPolling() {
+    refreshProjects();
+    projectsTimer = setInterval(refreshProjects, PROJECTS_POLL_MS);
+  }
+
   // ---- click wiring ----
   // Each toggle button carries its current intent in data-action ("start"|
   // "stop") and its target in data-target ("all"|"lms"|"watcher"). One
@@ -317,5 +460,6 @@
     wireButtons();
     logLine('dashboard ready', 'info');
     startPolling();
+    startProjectsPolling();   // Phase 50: unified command center poll
   });
 })();

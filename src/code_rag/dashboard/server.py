@@ -355,6 +355,30 @@ async def eval_history(req: Request) -> JSONResponse:
     })
 
 
+async def projects(_req: Request) -> JSONResponse:
+    """Phase 50: unified command center — state for ALL projects.
+
+    Returns a list of projects with their scheduled tasks + running
+    processes + per-project error (if probes failed). Read-only;
+    actions remain on the existing per-project endpoints.
+
+    Probes run in a worker thread (PowerShell cmdlets per project,
+    each ≤10s timeout, two probes per project = ~6 PS invocations).
+    Outer wait_for(45s) ceiling guards the event loop.
+    """
+    from code_rag.dashboard.projects import get_projects_state
+    try:
+        payload = await asyncio.wait_for(
+            asyncio.to_thread(get_projects_state),
+            timeout=45.0,
+        )
+    except asyncio.TimeoutError:
+        return JSONResponse(
+            {"error": "projects probe exceeded 45s"}, status_code=504,
+        )
+    return JSONResponse({"projects": payload})
+
+
 async def _maybe_json(req: Request) -> dict[str, Any]:
     try:
         b = await req.body()
@@ -401,6 +425,7 @@ def build_app() -> Starlette:
         Route("/api/models/load",        endpoint=load_model,      methods=["POST"]),
         Route("/api/models/unload",      endpoint=unload_model,    methods=["POST"]),
         Route("/api/eval-history",       endpoint=eval_history,    methods=["GET"]),
+        Route("/api/projects",           endpoint=projects,        methods=["GET"]),
         Mount("/static", app=StaticFiles(directory=str(_STATIC_DIR)), name="static"),
     ]
     middleware = [
