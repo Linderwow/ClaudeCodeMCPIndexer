@@ -279,10 +279,12 @@
       html += `<div class="kv error">probe error: ${escapeHtml(project.error)}</div>`;
     }
 
-    // Tasks. Phase 54: skip the section entirely when empty (saves ~28px
-    // of dead space per project card for the common no-tasks-here case).
+    // Tasks. Phase 54: skip the section entirely when empty.
+    // Phase 56: a one-line note clarifies tasks fire autonomously on schedule.
     if (taskCount) {
-      html += `<h3 class="subhead">Scheduled tasks (${taskCount})</h3>`;
+      html += `<h3 class="subhead">Scheduled tasks (${taskCount})
+        <span class="subhead-note">— autonomous on schedule; <strong>run</strong> = force-fire now</span>
+      </h3>`;
       html += `<table class="proj-table"><thead><tr><th>Name</th><th>State</th><th>Hidden</th><th>Repeat</th><th>Last run</th><th>Exit</th><th></th></tr></thead><tbody>`;
       for (const t of project.tasks) {
         const stateCls = t.state === 'Running' ? 'state-running'
@@ -291,14 +293,22 @@
         const hiddenCls = t.hidden ? 'hidden-ok' : 'hidden-warn';
         const lastResult = t.last_result === 0 ? '0' : (t.last_result == null ? '—' : String(t.last_result));
         const lastResultCls = t.last_result === 0 ? '' : (t.last_result == null ? '' : 'state-warn');
-        // Phase 51: per-row action button. Run if Ready/Disabled, Stop if Running.
-        // Disabled tasks render Run too — Start-ScheduledTask refuses on disabled,
-        // we surface that error via the result toast rather than hide the button.
+        // Phase 51 → 56: per-row action button. Stop stays bold (urgent —
+        // user needs to see it). Run is dim-by-default + visible on hover
+        // since 99% of tasks fire autonomously on schedule and the button
+        // is only useful for "force-fire NOW" (e.g. retry a failed daily
+        // task without waiting 24 hours). Tasks with a schedule are
+        // explicitly tagged so CSS can dim them differently from
+        // schedule-less manual tasks.
         let actionBtn = '';
         if (t.state === 'Running') {
-          actionBtn = `<button class="row-btn row-btn-stop" data-task-action="stop" data-task-name="${escapeHtml(t.name)}">stop</button>`;
+          actionBtn = `<button class="row-btn row-btn-stop" data-task-action="stop" data-task-name="${escapeHtml(t.name)}" title="Stop this running task">stop</button>`;
         } else if (t.state !== 'Disabled') {
-          actionBtn = `<button class="row-btn row-btn-run" data-task-action="run" data-task-name="${escapeHtml(t.name)}">run</button>`;
+          const scheduledClass = t.repeat ? ' row-btn-run-scheduled' : '';
+          const tipText = t.repeat
+            ? `Force-fire NOW (manual override). Task is already on schedule: ${t.repeat}.`
+            : 'Run NOW (this task has no automatic schedule).';
+          actionBtn = `<button class="row-btn row-btn-run${scheduledClass}" data-task-action="run" data-task-name="${escapeHtml(t.name)}" title="${escapeHtml(tipText)}">run</button>`;
         }
         html += `<tr>
           <td title="${escapeHtml(t.exe)}">${escapeHtml(t.name)}</td>
@@ -322,7 +332,7 @@
         // (kill is destructive, no undo). Backend whitelist verifies the
         // PID's cmdline matches the project pattern at action time so a
         // PID-reuse race can't trick us into killing the wrong process.
-        const killBtn = `<button class="row-btn row-btn-kill" data-proc-pid="${p.pid}" data-proc-name="${escapeHtml(p.name)}">kill</button>`;
+        const killBtn = `<button class="row-btn row-btn-kill" data-proc-pid="${p.pid}" data-proc-name="${escapeHtml(p.name)}" title="Force-terminate this process (Stop-Process -Force, no undo)">kill</button>`;
         html += `<tr>
           <td>${p.pid}</td>
           <td>${escapeHtml(p.name)}</td>

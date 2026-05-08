@@ -416,6 +416,33 @@ code { font-family: var(--mono); font-size: 12px; color: var(--text-mute); }
 .row-btn-kill   { color: #ff9a96; border-color: #4a2222; }
 .row-btn-kill:hover:not(:disabled)   { background: #2a1212; }
 
+/* Phase 56: tasks WITH a schedule are autonomous — fade their Run
+   button by default so the table reads as "leave these alone".
+   Reveal on row hover for force-fire when needed. Tasks WITHOUT a
+   schedule (manual-only) keep full opacity since they REQUIRE a
+   manual run. */
+.row-btn-run-scheduled {
+  opacity: 0.18;
+  transition: opacity 120ms;
+}
+.proj-table tr:hover .row-btn-run-scheduled { opacity: 1; }
+
+/* Phase 56: subhead inline note — explains the run-button semantics
+   without taking another row of vertical space. */
+.subhead-note {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  font-size: 9px;
+  color: var(--text-dim);
+  margin-left: 6px;
+  opacity: 0.7;
+}
+.subhead-note strong {
+  color: #9ad7a4;
+  font-weight: 500;
+}
+
 /* ---- Phase 52: Resource Budget panel (Phase 54: compact) ---- */
 .budget {
   margin: 16px 18px 0;
