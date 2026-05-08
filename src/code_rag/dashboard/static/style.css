@@ -41,9 +41,10 @@ button { font-family: inherit; }
 code { font-family: var(--mono); font-size: 12px; color: var(--text-mute); }
 
 .app {
-  max-width: 1280px;
+  max-width: 1600px;       /* Phase 54: wider so the 3 project cards fit
+                              side-by-side without forcing one to wrap */
   margin: 0 auto;
-  padding: 24px;
+  padding: 12px 16px;      /* Phase 54: was 24px all-around */
 }
 
 /* ---------- topbar ---------- */
@@ -160,8 +161,8 @@ code { font-family: var(--mono); font-size: 12px; color: var(--text-mute); }
 .grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-  margin-top: 20px;
+  gap: 12px;
+  margin-top: 12px;        /* Phase 54: was 20px */
 }
 
 @media (max-width: 880px) {
@@ -181,14 +182,14 @@ code { font-family: var(--mono); font-size: 12px; color: var(--text-mute); }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 18px;
+  padding: 8px 14px;       /* Phase 54: was 14px 18px */
   background: var(--bg-card-2);
   border-bottom: 1px solid var(--border-soft);
 }
 
 .card-header h2 {
   margin: 0;
-  font-size: 14px;
+  font-size: 12px;         /* Phase 54: was 14px */
   font-weight: 600;
   letter-spacing: 0.01em;
   text-transform: uppercase;
@@ -196,7 +197,7 @@ code { font-family: var(--mono); font-size: 12px; color: var(--text-mute); }
 }
 
 .card-body {
-  padding: 16px 18px;
+  padding: 10px 14px;      /* Phase 54: was 16px 18px */
 }
 
 .card-actions {
@@ -312,28 +313,35 @@ code { font-family: var(--mono); font-size: 12px; color: var(--text-mute); }
 .log .line.info     { color: #79bcff; }
 .log .line .ts      { color: var(--text-dim); margin-right: 8px; }
 
-/* ---- Phase 50: Unified Command Center ---- */
+/* ---- Phase 50: Unified Command Center (Phase 54: compact) ---- */
 .projects {
-  margin: 24px 18px 0;
+  margin: 16px 18px 0;
 }
 .projects > .card-header {
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 .projects-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  gap: 12px;
+  align-items: start;   /* Phase 54: cards size to their own content,
+                           don't stretch to match the tallest sibling.
+                           Eliminates the dead space below code-rag (2
+                           processes) when YouTubeBot has 28. 380px min
+                           lets all 3 project cards fit side-by-side at
+                           1280px+. */
 }
-.project-card .card-body {
-  padding: 12px 16px 16px;
-}
+.project-card { align-self: start; }
+.project-card .card-body { padding: 8px 12px 10px; }
 .project-card .subhead {
-  margin: 14px 0 6px;
-  font-size: 11px;
+  margin: 8px 0 4px;
+  font-size: 10px;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.04em;
   color: var(--text-dim);
 }
+.project-card .card-header { padding: 8px 12px; }
+.project-card .card-header h2 { font-size: 13px; margin: 0; }
 .proj-table {
   width: 100%;
   border-collapse: collapse;
@@ -346,17 +354,18 @@ code { font-family: var(--mono); font-size: 12px; color: var(--text-mute); }
   font-weight: 500;
   color: var(--text-dim);
   border-bottom: 1px solid var(--border);
-  padding: 4px 6px;
-  font-size: 10px;
+  padding: 2px 6px;
+  font-size: 9px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 .proj-table td {
-  padding: 3px 6px;
+  padding: 1px 6px;       /* Phase 54: was 3px, half the row height */
   border-bottom: 1px solid #1a1f29;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  line-height: 1.4;
 }
 .proj-table tr:last-child td {
   border-bottom: none;
@@ -407,28 +416,27 @@ code { font-family: var(--mono); font-size: 12px; color: var(--text-mute); }
 .row-btn-kill   { color: #ff9a96; border-color: #4a2222; }
 .row-btn-kill:hover:not(:disabled)   { background: #2a1212; }
 
-/* ---- Phase 52: Resource Budget panel ---- */
+/* ---- Phase 52: Resource Budget panel (Phase 54: compact) ---- */
 .budget {
-  margin: 24px 18px 0;
+  margin: 16px 18px 0;
 }
-.budget > .card-header {
-  margin-bottom: 12px;
-}
+.budget > .card-header { margin-bottom: 6px; }
 .budget-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+  gap: 6px;
 }
 .budget-summary {
+  grid-column: 1 / -1;
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
-  padding: 10px 14px;
+  padding: 6px 10px;
   background: #0d1117;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 4px;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-mute);
 }
 .budget-summary .dim {
@@ -436,11 +444,11 @@ code { font-family: var(--mono); font-size: 12px; color: var(--text-mute); }
   font-size: 10px;
 }
 .budget-row {
-  padding: 10px 14px;
+  padding: 6px 10px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 4px;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 11px;
   background: #0d1117;
 }
 .budget-row.ok {
@@ -453,8 +461,8 @@ code { font-family: var(--mono); font-size: 12px; color: var(--text-mute); }
 .budget-row-head {
   display: flex;
   align-items: center;
-  gap: 10px;
-  font-size: 13px;
+  gap: 8px;
+  font-size: 12px;
   color: var(--text);
 }
 .budget-icon {
@@ -476,21 +484,21 @@ code { font-family: var(--mono); font-size: 12px; color: var(--text-mute); }
 .budget-row.ok .budget-status-text      { color: #9ad7a4; }
 .budget-row.blocked .budget-status-text { color: #ff9a96; }
 .budget-meta {
-  margin-top: 4px;
+  margin-top: 2px;
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: 10px;
 }
 .budget-suggestion {
-  margin-top: 6px;
-  padding: 6px 10px;
+  margin-top: 4px;
+  padding: 4px 8px;
   background: #1f1313;
-  border-radius: 4px;
+  border-radius: 3px;
   color: #ffb499;
-  font-size: 11px;
+  font-size: 10px;
 }
 .budget-notes {
-  margin-top: 4px;
-  font-size: 10px;
+  margin-top: 2px;
+  font-size: 9px;
   color: var(--text-dim);
   cursor: help;
 }

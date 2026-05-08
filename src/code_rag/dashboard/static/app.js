@@ -275,11 +275,10 @@
       html += `<div class="kv error">probe error: ${escapeHtml(project.error)}</div>`;
     }
 
-    // Tasks
-    html += `<h3 class="subhead">Scheduled tasks (${taskCount})</h3>`;
-    if (!taskCount) {
-      html += `<div class="kv small"><em>none</em></div>`;
-    } else {
+    // Tasks. Phase 54: skip the section entirely when empty (saves ~28px
+    // of dead space per project card for the common no-tasks-here case).
+    if (taskCount) {
+      html += `<h3 class="subhead">Scheduled tasks (${taskCount})</h3>`;
       html += `<table class="proj-table"><thead><tr><th>Name</th><th>State</th><th>Hidden</th><th>Repeat</th><th>Last run</th><th>Exit</th><th></th></tr></thead><tbody>`;
       for (const t of project.tasks) {
         const stateCls = t.state === 'Running' ? 'state-running'
@@ -310,11 +309,9 @@
       html += `</tbody></table>`;
     }
 
-    // Processes
-    html += `<h3 class="subhead">Live processes (${procCount})</h3>`;
-    if (!procCount) {
-      html += `<div class="kv small"><em>none running</em></div>`;
-    } else {
+    // Processes. Phase 54: skip when empty.
+    if (procCount) {
+      html += `<h3 class="subhead">Live processes (${procCount})</h3>`;
       html += `<table class="proj-table"><thead><tr><th>PID</th><th>Name</th><th>RAM</th><th>Age</th><th>Cmd</th><th></th></tr></thead><tbody>`;
       for (const p of project.processes) {
         // Kill button for every process row. Clicked button confirms first
