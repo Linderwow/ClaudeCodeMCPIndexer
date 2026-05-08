@@ -67,6 +67,7 @@ function Install-RepeatingTask {
         -AllowStartIfOnBatteries `
         -DontStopIfGoingOnBatteries `
         -StartWhenAvailable `
+        -Hidden `
         -ExecutionTimeLimit (New-TimeSpan -Minutes $ExecLimitMinutes) `
         -MultipleInstances IgnoreNew
 

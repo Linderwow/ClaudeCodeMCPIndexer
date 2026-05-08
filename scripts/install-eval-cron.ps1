@@ -63,6 +63,7 @@ function Install-Task {
         -AllowStartIfOnBatteries `
         -DontStopIfGoingOnBatteries `
         -StartWhenAvailable `
+        -Hidden `
         -ExecutionTimeLimit (New-TimeSpan -Minutes $TimeLimitMinutes) `
         -MultipleInstances IgnoreNew
 

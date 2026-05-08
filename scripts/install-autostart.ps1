@@ -45,10 +45,14 @@ $action   = New-ScheduledTaskAction `
 $trigger  = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 
 # Settings: keep it alive, auto-restart on failure, don't stop when on battery.
+# Phase 48 -Hidden: without this, Task Scheduler may briefly flash a wrapper
+# window each time the action launches — even when the action exe is
+# pythonw.exe — stealing focus from foreground apps (Call of Duty, etc.).
 $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
     -StartWhenAvailable `
+    -Hidden `
     -RestartCount 5 `
     -RestartInterval (New-TimeSpan -Minutes 1) `
     -ExecutionTimeLimit ([TimeSpan]::Zero)   # run indefinitely
