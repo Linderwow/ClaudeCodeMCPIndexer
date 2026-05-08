@@ -348,7 +348,28 @@ code { font-family: var(--mono); font-size: 12px; color: var(--text-mute); }
   font-family: var(--mono);
   font-size: 11px;
   color: var(--text-mute);
+  /* Phase 57: fixed layout so a fat EXIT code or long CMD can't push
+     the action column off the right edge. Per-column widths defined
+     by .proj-table-tasks / .proj-table-procs nth-child rules below. */
+  table-layout: fixed;
 }
+
+/* Tasks: Name | State | H | Repeat | Last run | Exit | [action] */
+.proj-table-tasks th:nth-child(1), .proj-table-tasks td:nth-child(1) { width: auto; }   /* Name — flexes */
+.proj-table-tasks th:nth-child(2), .proj-table-tasks td:nth-child(2) { width: 56px; }   /* State */
+.proj-table-tasks th:nth-child(3), .proj-table-tasks td:nth-child(3) { width: 22px; text-align: center; }  /* Hidden icon */
+.proj-table-tasks th:nth-child(4), .proj-table-tasks td:nth-child(4) { width: 110px; }  /* Repeat */
+.proj-table-tasks th:nth-child(5), .proj-table-tasks td:nth-child(5) { width: 64px; }   /* Last run */
+.proj-table-tasks th:nth-child(6), .proj-table-tasks td:nth-child(6) { width: 56px; }   /* Exit */
+.proj-table-tasks th:nth-child(7), .proj-table-tasks td:nth-child(7) { width: 44px; padding-right: 8px; }  /* Actions */
+
+/* Processes: PID | Name | RAM | Age | Cmd | [action] */
+.proj-table-procs th:nth-child(1), .proj-table-procs td:nth-child(1) { width: 50px; }   /* PID */
+.proj-table-procs th:nth-child(2), .proj-table-procs td:nth-child(2) { width: 90px; }   /* Name */
+.proj-table-procs th:nth-child(3), .proj-table-procs td:nth-child(3) { width: 56px; }   /* RAM */
+.proj-table-procs th:nth-child(4), .proj-table-procs td:nth-child(4) { width: 40px; }   /* Age */
+.proj-table-procs th:nth-child(5), .proj-table-procs td:nth-child(5) { width: auto; }   /* Cmd — flexes */
+.proj-table-procs th:nth-child(6), .proj-table-procs td:nth-child(6) { width: 44px; padding-right: 8px; }  /* Actions */
 .proj-table th {
   text-align: left;
   font-weight: 500;

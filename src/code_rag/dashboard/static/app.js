@@ -285,14 +285,28 @@
       html += `<h3 class="subhead">Scheduled tasks (${taskCount})
         <span class="subhead-note">— autonomous on schedule; <strong>run</strong> = force-fire now</span>
       </h3>`;
-      html += `<table class="proj-table"><thead><tr><th>Name</th><th>State</th><th>Hidden</th><th>Repeat</th><th>Last run</th><th>Exit</th><th></th></tr></thead><tbody>`;
+      html += `<table class="proj-table proj-table-tasks"><thead><tr><th>Name</th><th>State</th><th>H</th><th>Repeat</th><th>Last run</th><th>Exit</th><th></th></tr></thead><tbody>`;
       for (const t of project.tasks) {
         const stateCls = t.state === 'Running' ? 'state-running'
                        : t.state === 'Disabled' ? 'state-disabled' : '';
         const hiddenIcon = t.hidden ? '✓' : '⚠';
         const hiddenCls = t.hidden ? 'hidden-ok' : 'hidden-warn';
-        const lastResult = t.last_result === 0 ? '0' : (t.last_result == null ? '—' : String(t.last_result));
-        const lastResultCls = t.last_result === 0 ? '' : (t.last_result == null ? '' : 'state-warn');
+        // Phase 57: huge Win32 status codes (e.g. 3221225786 = 0xC000013A
+        // STATUS_CONTROL_C_EXIT) overflow the column. Render small ints
+        // as-is; render >9999 as 0xHEX so the column stays narrow. Full
+        // decimal is in the tooltip for the curious.
+        const rawResult = t.last_result;
+        let lastResult, lastResultTip;
+        if (rawResult === 0) { lastResult = '0'; lastResultTip = 'success (exit 0)'; }
+        else if (rawResult == null) { lastResult = '—'; lastResultTip = 'never run'; }
+        else if (Math.abs(rawResult) > 9999) {
+          lastResult = '0x' + (rawResult >>> 0).toString(16).toUpperCase();
+          lastResultTip = `exit ${rawResult}`;
+        } else {
+          lastResult = String(rawResult);
+          lastResultTip = `exit ${rawResult}`;
+        }
+        const lastResultCls = rawResult === 0 ? '' : (rawResult == null ? '' : 'state-warn');
         // Phase 51 → 56: per-row action button. Stop stays bold (urgent —
         // user needs to see it). Run is dim-by-default + visible on hover
         // since 99% of tasks fire autonomously on schedule and the button
@@ -316,7 +330,7 @@
           <td class="${hiddenCls}">${hiddenIcon}</td>
           <td>${escapeHtml(fmtRepeat(t.repeat))}</td>
           <td>${escapeHtml(fmtLastRun(t.last_run))}</td>
-          <td class="${lastResultCls}">${escapeHtml(lastResult)}</td>
+          <td class="${lastResultCls}" title="${escapeHtml(lastResultTip)}">${escapeHtml(lastResult)}</td>
           <td class="row-actions">${actionBtn}</td>
         </tr>`;
       }
@@ -326,7 +340,7 @@
     // Processes. Phase 54: skip when empty.
     if (procCount) {
       html += `<h3 class="subhead">Live processes (${procCount})</h3>`;
-      html += `<table class="proj-table"><thead><tr><th>PID</th><th>Name</th><th>RAM</th><th>Age</th><th>Cmd</th><th></th></tr></thead><tbody>`;
+      html += `<table class="proj-table proj-table-procs"><thead><tr><th>PID</th><th>Name</th><th>RAM</th><th>Age</th><th>Cmd</th><th></th></tr></thead><tbody>`;
       for (const p of project.processes) {
         // Kill button for every process row. Clicked button confirms first
         // (kill is destructive, no undo). Backend whitelist verifies the
