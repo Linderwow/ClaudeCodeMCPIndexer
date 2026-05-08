@@ -120,25 +120,35 @@ def _list_tasks(globs: list[str]) -> list[TaskInfo]:
     or_clauses = " -or ".join(
         f"($_.TaskName -like '{g}')" for g in globs
     )
+    # Phase 53: dump RAW trigger fields (class name + StartBoundary +
+    # DaysOfWeek + Repetition.Interval) per trigger and let Python format.
+    # The previous attempt at an in-PS switch with multi-statement cases
+    # had too many edge-case crashes (DaysOfWeek empty, StartBoundary
+    # malformed, etc.) and silently returned 0 tasks. Raw fields are
+    # boring + reliable.
     script = (
         "Get-ScheduledTask | Where-Object { " + or_clauses + " } | "
         "ForEach-Object { "
         "  $info = Get-ScheduledTaskInfo $_; "
-        "  $repeat = ($_.Triggers | ForEach-Object { "
-        "      if ($_.Repetition -and $_.Repetition.Interval) { "
-        "          $_.Repetition.Interval } "
-        "  }) | Select-Object -First 1; "
+        "  $triggers = @($_.Triggers | ForEach-Object { "
+        "      [PSCustomObject]@{ "
+        "        cls            = $_.CimClass.CimClassName; "
+        "        start_boundary = $_.StartBoundary; "
+        "        days_of_week   = if ($_.DaysOfWeek) { $_.DaysOfWeek.ToString() } else { $null }; "
+        "        interval       = if ($_.Repetition) { $_.Repetition.Interval } else { $null }; "
+        "      } "
+        "  }); "
         "  [PSCustomObject]@{ "
         "    name        = $_.TaskName; "
         "    state       = $_.State.ToString(); "
         "    hidden      = $_.Settings.Hidden; "
         "    exe         = (Split-Path $_.Actions[0].Execute -Leaf); "
-        "    repeat      = $repeat; "
+        "    triggers    = $triggers; "
         "    last_run    = if ($info.LastRunTime -and $info.LastRunTime.Year -gt 1900) "
         "                  { $info.LastRunTime.ToString('o') } else { $null }; "
         "    last_result = $info.LastTaskResult; "
         "  } "
-        "} | ConvertTo-Json -Compress -Depth 3"
+        "} | ConvertTo-Json -Compress -Depth 4"
     )
     try:
         r = subprocess.run(
@@ -164,12 +174,16 @@ def _list_tasks(globs: list[str]) -> list[TaskInfo]:
         if not isinstance(d, dict):
             continue
         try:
+            triggers_raw = d.get("triggers") or []
+            if isinstance(triggers_raw, dict):   # PS may flatten 1-element list
+                triggers_raw = [triggers_raw]
+            schedule = _format_schedule(triggers_raw)
             out.append(TaskInfo(
                 name=str(d.get("name", "")),
                 state=str(d.get("state", "Unknown")),
                 hidden=bool(d.get("hidden", False)),
                 exe=str(d.get("exe", "")),
-                repeat=(str(d["repeat"]) if d.get("repeat") else None),
+                repeat=schedule,
                 last_run=(str(d["last_run"]) if d.get("last_run") else None),
                 last_result=(
                     int(d["last_result"]) if isinstance(d.get("last_result"), int)
@@ -180,6 +194,108 @@ def _list_tasks(globs: list[str]) -> list[TaskInfo]:
             continue
     out.sort(key=lambda t: t.name)
     return out
+
+
+def _format_schedule(triggers: list[dict[str, Any]]) -> str | None:
+    """Phase 53: turn raw triggers into a human schedule string.
+
+    Examples:
+      [{cls=...DailyTrigger..., start_boundary='2026-05-08T03:00:00'}]
+        -> 'daily 03:00'
+      [{cls=...WeeklyTrigger..., days_of_week='Monday, Tuesday', start='...05:00'}]
+        -> 'weekly Mon/Tue 05:00'
+      [{cls=...RepetitionPattern... or TimeTrigger..., interval='PT5M'}]
+        -> 'PT5M'
+      [{cls=...DailyTrigger..., interval='PT30M'}]
+        -> 'daily 03:00 / +PT30M'
+
+    Returns None when no triggers parse to a meaningful schedule.
+    """
+    parts: list[str] = []
+    for t in triggers:
+        if not isinstance(t, dict):
+            continue
+        cls = str(t.get("cls", ""))
+        start = t.get("start_boundary")
+        days = t.get("days_of_week")
+        interval = t.get("interval")
+
+        # Extract HH:MM from start_boundary if present. Strict check —
+        # only accept if it looks like a real ISO time (HH:MM with the
+        # colon at position 2). Defends against junk strings that
+        # happen to contain a 'T'.
+        time_str = ""
+        if isinstance(start, str) and "T" in start:
+            tail = start.split("T", 1)[1][:5]
+            if len(tail) == 5 and tail[2] == ":" and tail[:2].isdigit() and tail[3:].isdigit():
+                time_str = tail
+
+        # Extract abbreviated days_of_week if present.
+        # Windows MSFT_TaskDaysOfWeek can come back two ways:
+        #   - String: 'Monday, Wednesday' → split + abbreviate
+        #   - Bitfield int (when ToString() returns the numeric value):
+        #     1=Sun, 2=Mon, 4=Tue, 8=Wed, 16=Thu, 32=Fri, 64=Sat
+        #     Special: 62 = Mon-Fri (weekdays), 65 = weekends, 127 = all
+        _DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        days_str = ""
+        if isinstance(days, str) and days:
+            try:
+                bits = int(days)
+                # Special cases for nicer rendering
+                if bits == 62:
+                    days_str = "weekdays"
+                elif bits == 65:
+                    days_str = "weekends"
+                elif bits == 127:
+                    days_str = "all"
+                else:
+                    out_days = [
+                        _DAY_NAMES[i] for i in range(7) if bits & (1 << i)
+                    ]
+                    days_str = "/".join(out_days)
+            except ValueError:
+                # Comma-separated names like 'Monday, Wednesday'
+                day_abbrev = []
+                for d in days.split(","):
+                    d = d.strip()
+                    if d:
+                        day_abbrev.append(d[:3])
+                days_str = "/".join(day_abbrev)
+
+        base: str | None
+        if "DailyTrigger" in cls:
+            base = f"daily {time_str}".strip()
+        elif "WeeklyTrigger" in cls:
+            base = f"weekly {days_str} {time_str}".strip()
+        elif "MonthlyTrigger" in cls or "MonthlyDOWTrigger" in cls:
+            base = "monthly"
+        elif "BootTrigger" in cls:
+            base = "at boot"
+        elif "LogonTrigger" in cls:
+            base = "at logon"
+        elif "RegistrationTrigger" in cls:
+            base = "at registration"
+        elif "EventTrigger" in cls:
+            base = "on event"
+        elif "TimeTrigger" in cls:
+            base = "one-shot" if not interval else None
+        elif "RepetitionPattern" in cls:
+            base = None   # interval handled below
+        else:
+            # Unknown — show stripped class name.
+            base = cls.replace("MSFT_Task", "").replace("Trigger", "")
+            base = base or None
+
+        # Combine base + interval (e.g. 'daily 03:00 / +PT30M')
+        if interval and base:
+            parts.append(f"{base} / +{interval}")
+        elif interval:
+            parts.append(str(interval))
+        elif base:
+            parts.append(base)
+    if not parts:
+        return None
+    return ", ".join(parts)
 
 
 def _list_processes(pattern: str) -> list[ProcInfo]:

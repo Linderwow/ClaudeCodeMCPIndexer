@@ -207,16 +207,29 @@
   let projectsTimer = null;
 
   function fmtRepeat(r) {
+    // Phase 53: backend now sends rich schedule strings like
+    // 'PT5M', 'PT1H', 'P1D', 'daily 03:00', 'weekly Mon 05:00',
+    // 'at boot', 'at logon', 'monthly', 'one-shot', or combos like
+    // 'daily 03:00 / +PT30M'. Format ISO durations to human; pass
+    // human strings through as-is.
     if (!r) return '—';
-    const m = String(r).match(/^PT(\d+)([HMS])$/);
-    if (m) {
-      const v = m[1], u = m[2];
-      if (u === 'M') return `${v} min`;
-      if (u === 'H') return `${v} h`;
-      if (u === 'S') return `${v} s`;
-    }
-    if (r === 'P1D') return 'daily';
-    return r;
+    const s = String(r);
+    // Split combo like "daily 03:00 / +PT30M" — format each part.
+    const parts = s.split('/').map(p => p.trim());
+    const fmtOne = (x) => {
+      const m = x.match(/^(\+?)PT(\d+)([HMS])$/);
+      if (m) {
+        const sign = m[1], v = m[2], u = m[3];
+        if (u === 'M') return `${sign}${v} min`;
+        if (u === 'H') return `${sign}${v} h`;
+        if (u === 'S') return `${sign}${v} s`;
+      }
+      const m2 = x.match(/^PT(\d+)M(\d+)S$/);
+      if (m2) return `${m2[1]}m${m2[2]}s`;
+      if (x === 'P1D') return 'daily';
+      return x;
+    };
+    return parts.map(fmtOne).join(' · ');
   }
 
   function fmtAge(s) {
