@@ -267,7 +267,7 @@
     if (!taskCount) {
       html += `<div class="kv small"><em>none</em></div>`;
     } else {
-      html += `<table class="proj-table"><thead><tr><th>Name</th><th>State</th><th>Hidden</th><th>Repeat</th><th>Last run</th><th>Exit</th></tr></thead><tbody>`;
+      html += `<table class="proj-table"><thead><tr><th>Name</th><th>State</th><th>Hidden</th><th>Repeat</th><th>Last run</th><th>Exit</th><th></th></tr></thead><tbody>`;
       for (const t of project.tasks) {
         const stateCls = t.state === 'Running' ? 'state-running'
                        : t.state === 'Disabled' ? 'state-disabled' : '';
@@ -275,6 +275,15 @@
         const hiddenCls = t.hidden ? 'hidden-ok' : 'hidden-warn';
         const lastResult = t.last_result === 0 ? '0' : (t.last_result == null ? '—' : String(t.last_result));
         const lastResultCls = t.last_result === 0 ? '' : (t.last_result == null ? '' : 'state-warn');
+        // Phase 51: per-row action button. Run if Ready/Disabled, Stop if Running.
+        // Disabled tasks render Run too — Start-ScheduledTask refuses on disabled,
+        // we surface that error via the result toast rather than hide the button.
+        let actionBtn = '';
+        if (t.state === 'Running') {
+          actionBtn = `<button class="row-btn row-btn-stop" data-task-action="stop" data-task-name="${escapeHtml(t.name)}">stop</button>`;
+        } else if (t.state !== 'Disabled') {
+          actionBtn = `<button class="row-btn row-btn-run" data-task-action="run" data-task-name="${escapeHtml(t.name)}">run</button>`;
+        }
         html += `<tr>
           <td title="${escapeHtml(t.exe)}">${escapeHtml(t.name)}</td>
           <td class="${stateCls}">${escapeHtml(t.state)}</td>
@@ -282,6 +291,7 @@
           <td>${escapeHtml(fmtRepeat(t.repeat))}</td>
           <td>${escapeHtml(fmtLastRun(t.last_run))}</td>
           <td class="${lastResultCls}">${escapeHtml(lastResult)}</td>
+          <td class="row-actions">${actionBtn}</td>
         </tr>`;
       }
       html += `</tbody></table>`;
@@ -292,14 +302,20 @@
     if (!procCount) {
       html += `<div class="kv small"><em>none running</em></div>`;
     } else {
-      html += `<table class="proj-table"><thead><tr><th>PID</th><th>Name</th><th>RAM</th><th>Age</th><th>Cmd</th></tr></thead><tbody>`;
+      html += `<table class="proj-table"><thead><tr><th>PID</th><th>Name</th><th>RAM</th><th>Age</th><th>Cmd</th><th></th></tr></thead><tbody>`;
       for (const p of project.processes) {
+        // Kill button for every process row. Clicked button confirms first
+        // (kill is destructive, no undo). Backend whitelist verifies the
+        // PID's cmdline matches the project pattern at action time so a
+        // PID-reuse race can't trick us into killing the wrong process.
+        const killBtn = `<button class="row-btn row-btn-kill" data-proc-pid="${p.pid}" data-proc-name="${escapeHtml(p.name)}">kill</button>`;
         html += `<tr>
           <td>${p.pid}</td>
           <td>${escapeHtml(p.name)}</td>
           <td>${p.ram_mb} MB</td>
           <td>${escapeHtml(fmtAge(p.age_s))}</td>
           <td class="cmd-cell" title="${escapeHtml(p.cmd_preview)}">${escapeHtml(p.cmd_preview)}</td>
+          <td class="row-actions">${killBtn}</td>
         </tr>`;
       }
       html += `</tbody></table>`;
@@ -342,6 +358,51 @@
     projectsTimer = setInterval(refreshProjects, PROJECTS_POLL_MS);
   }
 
+  // Phase 51: per-row action delegation. Rows are re-rendered every 5s so
+  // we can't bind a listener per button — single delegated listener on the
+  // grid catches clicks for whichever row the user hit.
+  function wireProjectActions() {
+    const grid = $('projects-grid');
+    if (!grid) return;
+    grid.addEventListener('click', async (ev) => {
+      const btn = ev.target.closest('button.row-btn');
+      if (!btn) return;
+      ev.preventDefault();
+      // Brief disable to prevent double-click duplicates while in flight.
+      btn.disabled = true;
+      try {
+        if (btn.dataset.taskAction) {
+          const action = btn.dataset.taskAction;   // 'run' | 'stop'
+          const name = btn.dataset.taskName;
+          if (action === 'stop'
+              && !confirm(`Stop scheduled task "${name}"?`)) return;
+          logLine(`tasks.${action}(${name}) -> running…`, 'info');
+          const r = await postJSON(`/api/tasks/${action}`, { name });
+          logLine(
+            `tasks.${action}(${name}): ${r.detail || (r.ok ? 'ok' : 'failed')}`,
+            r.ok ? 'ok' : 'err',
+          );
+          refreshProjects();   // immediate refresh — show state flip without waiting 5s
+        } else if (btn.dataset.procPid) {
+          const pid = btn.dataset.procPid;
+          const pname = btn.dataset.procName || 'process';
+          if (!confirm(`Kill ${pname} (PID ${pid})?\n\nThis is destructive — no undo.`)) return;
+          logLine(`processes.kill(${pid}) -> running…`, 'info');
+          const r = await postJSON('/api/processes/kill', { pid: Number(pid) });
+          logLine(
+            `processes.kill(${pid}): ${r.detail || (r.ok ? 'ok' : 'failed')}`,
+            r.ok ? 'ok' : 'err',
+          );
+          refreshProjects();
+        }
+      } catch (e) {
+        logLine(`action failed: ${e.message}`, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+
   // ---- click wiring ----
   // Each toggle button carries its current intent in data-action ("start"|
   // "stop") and its target in data-target ("all"|"lms"|"watcher"). One
@@ -382,5 +443,6 @@
     logLine('dashboard ready', 'info');
     startPolling();
     startProjectsPolling();   // Phase 50: unified command center poll
+    wireProjectActions();     // Phase 51: per-row run/stop/kill buttons
   });
 })();

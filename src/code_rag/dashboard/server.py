@@ -355,6 +355,45 @@ async def eval_history(req: Request) -> JSONResponse:
     })
 
 
+async def task_run(req: Request) -> JSONResponse:
+    """Phase 51: POST /api/tasks/run  body: {"name": "<task name>"}.
+
+    Whitelisted to project-owned tasks (PROJECT_PROFILES globs). Refuses
+    arbitrary system task control. Runs the PowerShell call in a worker
+    thread so the dashboard event loop never blocks on schtasks RPC.
+    """
+    body = await _maybe_json(req)
+    name = str(body.get("name", "")).strip()
+    from code_rag.dashboard.projects import run_task
+    res = await asyncio.to_thread(run_task, name)
+    return JSONResponse(res)
+
+
+async def task_stop(req: Request) -> JSONResponse:
+    """Phase 51: POST /api/tasks/stop  body: {"name": "<task name>"}."""
+    body = await _maybe_json(req)
+    name = str(body.get("name", "")).strip()
+    from code_rag.dashboard.projects import stop_task
+    res = await asyncio.to_thread(stop_task, name)
+    return JSONResponse(res)
+
+
+async def process_kill(req: Request) -> JSONResponse:
+    """Phase 51: POST /api/processes/kill  body: {"pid": N}.
+
+    Whitelisted to processes whose cmdline matches PROJECT_PROFILES
+    regexes. Two-step probe-then-kill prevents PID-reuse race attacks.
+    """
+    body = await _maybe_json(req)
+    try:
+        pid = int(body.get("pid", 0))
+    except (TypeError, ValueError):
+        pid = 0
+    from code_rag.dashboard.projects import kill_process
+    res = await asyncio.to_thread(kill_process, pid)
+    return JSONResponse(res)
+
+
 async def projects(_req: Request) -> JSONResponse:
     """Phase 50: unified command center — state for ALL projects.
 
@@ -426,6 +465,9 @@ def build_app() -> Starlette:
         Route("/api/models/unload",      endpoint=unload_model,    methods=["POST"]),
         Route("/api/eval-history",       endpoint=eval_history,    methods=["GET"]),
         Route("/api/projects",           endpoint=projects,        methods=["GET"]),
+        Route("/api/tasks/run",          endpoint=task_run,        methods=["POST"]),
+        Route("/api/tasks/stop",         endpoint=task_stop,       methods=["POST"]),
+        Route("/api/processes/kill",     endpoint=process_kill,    methods=["POST"]),
         Mount("/static", app=StaticFiles(directory=str(_STATIC_DIR)), name="static"),
     ]
     middleware = [
