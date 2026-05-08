@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>code-rag dashboard</title>
+  <title>command center</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -11,72 +11,25 @@
     <header class="topbar">
       <div class="brand">
         <span class="logo-dot"></span>
-        <h1>code-rag</h1>
+        <h1>command center</h1>
         <span class="version" id="version">·</span>
       </div>
       <div class="topbar-actions">
-        <!-- Single button that flips between Start all / Stop all based on
-             status. The actual label, class, and action are set by app.js
-             from /api/status. The default state shown here (Start all) is
-             what we render before the first poll completes. -->
+        <!-- Start/Stop all targets the code-rag stack only (LM Studio +
+             watcher + MCP servers). Other projects are managed via Task
+             Scheduler / their own scripts. The button flips Start ↔ Stop
+             based on the current code-rag state from /api/status. -->
         <button id="btn-toggle-all" class="btn btn-primary" type="button"
-                data-action="start" data-target="all">
+                data-action="start" data-target="all"
+                title="Start/Stop the code-rag stack">
           <span class="btn-dot"></span> <span class="btn-label">Start all</span>
         </button>
       </div>
     </header>
 
+    <!-- Top-level resources card — cross-cutting (RAM/VRAM apply to ALL
+         projects). Single bar each, no per-project split (yet). -->
     <section class="grid">
-      <article class="card" id="card-lms">
-        <header class="card-header">
-          <h2>LM Studio</h2>
-          <span class="status-pill" id="lms-status">probing…</span>
-        </header>
-        <div class="card-body">
-          <div class="kv"><span>Server</span><strong id="lms-server">—</strong></div>
-          <div class="kv"><span>Endpoint</span><code id="lms-base">—</code></div>
-          <h3 class="subhead">Loaded models</h3>
-          <div id="lms-models" class="model-list">—</div>
-          <h3 class="subhead">Available (downloaded)</h3>
-          <div id="lms-available" class="muted small">—</div>
-        </div>
-        <footer class="card-actions">
-          <button id="btn-toggle-lms" class="btn btn-ghost" type="button"
-                  data-action="start" data-target="lms">Start server</button>
-        </footer>
-      </article>
-
-      <article class="card" id="card-watcher">
-        <header class="card-header">
-          <h2>Live watcher</h2>
-          <span class="status-pill" id="watcher-status">—</span>
-        </header>
-        <div class="card-body">
-          <div class="kv"><span>Task</span><code>code-rag-watch</code></div>
-          <div class="kv"><span>Last run</span><span id="watcher-lastrun">—</span></div>
-          <div class="kv"><span>Last result</span><span id="watcher-lastresult">—</span></div>
-          <div class="kv"><span>Active PIDs</span><span id="watcher-pids">—</span></div>
-        </div>
-        <footer class="card-actions">
-          <button id="btn-toggle-watcher" class="btn btn-ghost" type="button"
-                  data-action="start" data-target="watcher">Start watcher</button>
-        </footer>
-      </article>
-
-      <article class="card" id="card-index">
-        <header class="card-header">
-          <h2>Index</h2>
-          <span class="status-pill" id="index-status">—</span>
-        </header>
-        <div class="card-body">
-          <div class="kv"><span>Chunks</span><strong id="index-chunks">—</strong></div>
-          <div class="kv"><span>Embedder</span><span id="index-embedder">—</span></div>
-          <div class="kv"><span>Dim</span><span id="index-dim">—</span></div>
-          <div class="kv"><span>Schema</span><span id="index-schema">—</span></div>
-          <div class="kv"><span>Updated</span><span id="index-updated">—</span></div>
-        </div>
-      </article>
-
       <article class="card" id="card-resources">
         <header class="card-header">
           <h2>Resources</h2>
@@ -94,7 +47,7 @@
       </article>
     </section>
 
-    <!-- Phase 50: Unified Command Center — projects beyond code-rag -->
+    <!-- The main view: every project's tasks + processes in one place. -->
     <section class="projects" id="projects">
       <header class="card-header">
         <h2>All Projects</h2>
@@ -105,6 +58,8 @@
       </div>
     </section>
 
+    <!-- Activity log — feedback for Start/Stop button + any client-side
+         warnings (e.g. /api/projects probe failure). -->
     <section class="logpane">
       <header class="card-header">
         <h2>Activity</h2>

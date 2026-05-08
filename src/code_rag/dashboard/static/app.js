@@ -118,111 +118,29 @@
       lastStatus = s;
       renderStatus(s);
     } catch (e) {
-      // Network blip. Show degraded indicators but don't spam the log.
-      $('lms-status').textContent = 'unreachable';
-      $('lms-status').className = 'status-pill err';
+      // Network blip. /api/status powers the topbar Start/Stop button +
+      // the Resources card; degraded but not catastrophic.
+      const rs = $('resources-status');
+      if (rs) { rs.textContent = 'unreachable'; rs.className = 'status-pill err'; }
     }
   }
 
   function renderStatus(s) {
-    // ---- LM Studio ----
-    const lms = s.lm_studio || {};
-    const lmsServer = $('lms-server');
-    const lmsPill = $('lms-status');
-    const lmsUp = !!lms.server_up;
-    if (lmsUp) {
-      lmsServer.textContent = 'running';
-      lmsPill.textContent = 'up';
-      lmsPill.className = 'status-pill ok';
-    } else {
-      lmsServer.textContent = 'stopped';
-      lmsPill.textContent = 'down';
-      lmsPill.className = 'status-pill err';
-    }
-    $('lms-base').textContent = lms.base_url || '—';
-    renderToggle('btn-toggle-lms', 'lms', lmsUp);
-
-    // Loaded models
-    const modelsEl = $('lms-models');
-    modelsEl.innerHTML = '';
-    const loaded = lms.models_loaded || [];
-    if (loaded.length === 0) {
-      modelsEl.innerHTML = '<div class="muted small">none loaded</div>';
-    } else {
-      for (const m of loaded) {
-        const row = document.createElement('div');
-        row.className = 'model-row';
-        const sizeStr = m.size_mb >= 1024
-          ? `${(m.size_mb / 1024).toFixed(2)} GB`
-          : `${Math.round(m.size_mb)} MB`;
-        const ttl = m.ttl ? ` · TTL ${m.ttl}` : '';
-        row.innerHTML = `
-          <div>
-            <div class="model-id">${escapeHtml(m.id)}</div>
-            <div class="model-meta">${escapeHtml(m.status || '')} · ${sizeStr}${escapeHtml(ttl)}</div>
-          </div>
-          <span class="model-meta">${escapeHtml(m.device || '')}</span>
-          <button class="btn btn-ghost-danger" data-unload="${escapeHtml(m.id)}">unload</button>
-        `;
-        modelsEl.appendChild(row);
-      }
-    }
-    // wire per-row unload buttons
-    modelsEl.querySelectorAll('button[data-unload]').forEach(b => {
-      b.addEventListener('click', withBusy(b, async () => {
-        const r = await postJSON('/api/models/unload', { model: b.dataset.unload });
-        logSteps(`unload(${b.dataset.unload})`, r);
-      }));
-    });
-
-    // Available (downloaded) — comma-separated, soft text
-    $('lms-available').textContent = (lms.models_available || []).join(', ') || '—';
-
-    // ---- Watcher ----
-    const w = s.watcher || {};
-    const wpill = $('watcher-status');
-    const ws = (w.task_state || '').toLowerCase();
-    const watcherRunning = ws === 'running';
-    if (watcherRunning) {
-      wpill.textContent = 'running';
-      wpill.className = 'status-pill ok';
-    } else if (ws === 'ready') {
-      wpill.textContent = 'idle';
-      wpill.className = 'status-pill warn';
-    } else if (ws === 'notregistered') {
-      wpill.textContent = 'not registered';
-      wpill.className = 'status-pill err';
-    } else {
-      wpill.textContent = w.task_state || '—';
-      wpill.className = 'status-pill';
-    }
-    $('watcher-lastrun').textContent = formatTs(w.last_run);
-    $('watcher-lastresult').textContent = formatTaskResult(w.last_result);
-    $('watcher-pids').textContent = (w.pythonw_pids || []).join(', ') || '—';
-    renderToggle('btn-toggle-watcher', 'watcher', watcherRunning);
+    // Phase 50 simplification: the per-component cards (LM Studio, Watcher,
+    // Index) were removed in favor of the unified All Projects panel below.
+    // We still consume /api/status for two cross-cutting things: the topbar
+    // Start/Stop button (needs to know if the code-rag stack is up) and
+    // the Resources card (RAM/VRAM bars).
 
     // ---- topbar Start all / Stop all ----
+    const lms = s.lm_studio || {};
+    const w = s.watcher || {};
+    const lmsUp = !!lms.server_up;
+    const watcherRunning = (w.task_state || '').toLowerCase() === 'running';
     // "All" is "up" iff BOTH LM Studio AND the watcher are up. Any partial
     // state renders as "Start all" so the click normalizes everything to up.
-    // (Stopping a partial state is the user's call via the per-card buttons.)
     const allUp = lmsUp && watcherRunning;
     renderToggle('btn-toggle-all', 'all', allUp);
-
-    // ---- Index ----
-    const idx = s.index || {};
-    const ipill = $('index-status');
-    if (idx.present) {
-      ipill.textContent = 'present';
-      ipill.className = 'status-pill ok';
-    } else {
-      ipill.textContent = 'missing';
-      ipill.className = 'status-pill err';
-    }
-    $('index-chunks').textContent = idx.chunks != null ? idx.chunks.toLocaleString() : '—';
-    $('index-embedder').textContent = idx.embedder_model || '—';
-    $('index-dim').textContent = idx.embedder_dim != null ? idx.embedder_dim : '—';
-    $('index-schema').textContent = idx.schema_version != null ? `v${idx.schema_version}` : '—';
-    $('index-updated').textContent = formatTs(idx.updated_at);
 
     // ---- Resources ----
     const res = s.resources || {};
@@ -451,9 +369,12 @@
 
   function wireButtons() {
     wireToggle('btn-toggle-all');
-    wireToggle('btn-toggle-lms');
-    wireToggle('btn-toggle-watcher');
-    $('btn-clear-log').addEventListener('click', () => { logEl.innerHTML = ''; });
+    // Phase 50: per-card Start server / Start watcher buttons removed
+    // along with the LM Studio + Watcher cards. The topbar Start/Stop
+    // all is the only stack-control button now; granular control lives
+    // in the CLI / direct task scheduler.
+    const clearBtn = $('btn-clear-log');
+    if (clearBtn) clearBtn.addEventListener('click', () => { logEl.innerHTML = ''; });
   }
 
   document.addEventListener('DOMContentLoaded', () => {
