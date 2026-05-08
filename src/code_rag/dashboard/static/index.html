@@ -47,6 +47,18 @@
       </article>
     </section>
 
+    <!-- Phase 52: resource budget at a glance — can each project start
+         given current free RAM/VRAM? -->
+    <section class="budget" id="budget">
+      <header class="card-header">
+        <h2>Resource Budget</h2>
+        <span class="status-pill" id="budget-status">probing…</span>
+      </header>
+      <div class="budget-rows" id="budget-rows">
+        <!-- Rendered dynamically by app.js from /api/budget -->
+      </div>
+    </section>
+
     <!-- The main view: every project's tasks + processes in one place. -->
     <section class="projects" id="projects">
       <header class="card-header">

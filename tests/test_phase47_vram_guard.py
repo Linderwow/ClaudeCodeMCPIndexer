@@ -1,23 +1,21 @@
-"""Phase 47: Start All refuses when GPU VRAM is already > 50% used.
+"""Phase 47 → 52: Start All refuses when there isn't enough RAM/VRAM
+to run the code-rag stack without OOM.
 
-User context: today the user clicked Start All while ComfyUI was
-holding ~17 GB on the 22.5 GB GPU. LM Studio's `lms load` then
-hung for 109 seconds and returned "Unknown error" — KV-cache
-allocation OOM'd because there wasn't enough VRAM left to load
-the embedder cleanly. The user asked for a guard.
+Phase 47 originally used a simple "> 50% VRAM = refuse" rule. Phase 52
+replaced it with the budget-aware arbitrator (resource_budget.py) which
+knows code-rag's actual cost (~14 GB RAM + ~12 GB VRAM) and refuses
+when (current_used + cost) would exceed (total - reserve).
 
-Default threshold: 50%. If exceeded, Start All bails BEFORE clearing
-the stop marker / starting LM Studio. `force=True` overrides.
-Dashboard exposes the override via `?force=1` or `{"force": true}`.
-
-Guard is silent on machines with no GPU (nvidia-smi unavailable
-returns None) — we don't block CPU-only setups.
+This file pins the INTEGRATION (the budget verdict feeds into
+start_all and produces a 'budget_guard' step). The Phase 52 tests
+in test_phase52_resource_budget.py pin the budget logic in isolation.
 """
 from __future__ import annotations
 
 from unittest.mock import patch
 
 from code_rag.dashboard import operations as ops
+from code_rag.dashboard import resource_budget as rb
 
 
 class _StubSettings:
@@ -33,7 +31,7 @@ class _StubSettings:
         model = "text-embedding-qwen3-embedding-4b"
 
     class _Reranker:
-        kind = "cross_encoder"   # not lm_chat → load_model not called for reranker
+        kind = "cross_encoder"
         model = "BAAI/bge-reranker-v2-m3"
 
     paths = _Paths()
@@ -41,43 +39,60 @@ class _StubSettings:
     reranker = _Reranker()
 
 
-def _gpu(used_gb: float, total_gb: float = 22.5) -> dict:
-    return {
-        "name": "NVIDIA GeForce RTX 4090",
-        "vram_used_gb": used_gb,
-        "vram_total_gb": total_gb,
-        "util_pct": 0,
-        "temp_c": 40,
-    }
+def _verdict_blocked() -> rb.BudgetVerdict:
+    """Sample 'refuse' verdict — used to drive the integration test
+    without standing up the full nvidia-smi + RAM probe stack."""
+    return rb.BudgetVerdict(
+        project_id="code-rag", ok=False,
+        cost_ram_gb=14.0, cost_vram_gb=12.0,
+        available_ram_gb=10.0, available_vram_gb=2.0,
+        bottleneck="vram",
+        suggestion=(
+            "refuse start: code-rag (full stack) needs 14.0 GB RAM + 12.0 GB "
+            "VRAM. only 2.0 GB VRAM available (2.0 GB reserved); "
+            "need to free 10.0 GB."
+        ),
+    )
 
 
-def test_guard_blocks_when_vram_above_50pct() -> None:
-    """ComfyUI scenario: 17 GB / 22.5 GB used (~75%). Start All must
-    refuse and return BEFORE touching the stop marker, LM Studio, or
-    the watcher task."""
-    with patch.object(ops, "_gpu_status_via_nvidia_smi",
-                      return_value=_gpu(used_gb=17.0)), \
+def _verdict_ok() -> rb.BudgetVerdict:
+    """Sample 'pass' verdict for happy-path integration."""
+    return rb.BudgetVerdict(
+        project_id="code-rag", ok=True,
+        cost_ram_gb=14.0, cost_vram_gb=12.0,
+        available_ram_gb=40.0, available_vram_gb=18.0,
+        bottleneck=None,
+        suggestion="",
+    )
+
+
+def test_guard_blocks_when_budget_verdict_says_refuse() -> None:
+    """The budget arbitrator says 'refuse' (e.g. ComfyUI is hogging
+    VRAM). Start All must bail BEFORE clearing the stop marker, starting
+    LM Studio, or starting the watcher task."""
+    with patch.object(ops, "_budget_verdict_for_code_rag",
+                      return_value=_verdict_blocked()), \
          patch.object(ops, "start_lms_server",
-                      side_effect=AssertionError("must not start LMS when VRAM full")), \
+                      side_effect=AssertionError("must not start LMS when budget blocks")), \
          patch.object(ops, "start_watcher_task",
-                      side_effect=AssertionError("must not start watcher when VRAM full")):
+                      side_effect=AssertionError("must not start watcher when budget blocks")):
         result = ops.start_all(_StubSettings())
 
     assert result.ok is False
-    # Single-step result: just the guard.
     assert len(result.steps) == 1
     guard = result.steps[0]
-    assert guard.name == "vram_guard"
+    assert guard.name == "budget_guard"
     assert guard.ok is False
-    assert "75%" in guard.detail or "76%" in guard.detail   # 17/22.5 = 75.6%
-    assert "force" in guard.detail.lower()
+    # Suggestion should mention the bottleneck and how much to free.
+    assert "VRAM" in guard.detail
+    assert "free" in guard.detail.lower()
 
 
-def test_guard_passes_when_vram_below_50pct() -> None:
-    """5 GB / 22.5 GB (~22%). Guard records OK and Start All proceeds."""
-    with patch.object(ops, "_gpu_status_via_nvidia_smi",
-                      return_value=_gpu(used_gb=5.0)), \
-         patch.object(ops, "clear_intentionally_stopped" if hasattr(ops, "clear_intentionally_stopped") else "_unused", create=True), \
+def test_guard_passes_when_budget_verdict_says_ok() -> None:
+    """Happy path: enough headroom. Guard records PASS and start_all
+    proceeds through start_lms_server / load_model / start_watcher."""
+    with patch.object(ops, "_budget_verdict_for_code_rag",
+                      return_value=_verdict_ok()), \
          patch("code_rag.util.stop_marker.clear_intentionally_stopped",
                return_value=True), \
          patch.object(ops, "start_lms_server",
@@ -88,10 +103,9 @@ def test_guard_passes_when_vram_below_50pct() -> None:
                       return_value=ops.StepResult("start_watcher_task", True, "OK", 1.0)):
         result = ops.start_all(_StubSettings())
 
-    # First step is the guard, recording PASS.
-    assert result.steps[0].name == "vram_guard"
+    # First step is the budget guard, recording PASS.
+    assert result.steps[0].name == "budget_guard"
     assert result.steps[0].ok is True
-    assert "22%" in result.steps[0].detail
     # Subsequent steps ran.
     step_names = [s.name for s in result.steps]
     assert "start_lms_server" in step_names
@@ -99,9 +113,9 @@ def test_guard_passes_when_vram_below_50pct() -> None:
 
 
 def test_force_override_bypasses_guard() -> None:
-    """Even at 90% VRAM, force=True skips the guard entirely."""
-    with patch.object(ops, "_gpu_status_via_nvidia_smi",
-                      return_value=_gpu(used_gb=20.0)), \
+    """Even when the budget would refuse, force=True skips the guard."""
+    with patch.object(ops, "_budget_verdict_for_code_rag",
+                      side_effect=AssertionError("guard must NOT run when force=True")), \
          patch("code_rag.util.stop_marker.clear_intentionally_stopped",
                return_value=True), \
          patch.object(ops, "start_lms_server",
@@ -112,16 +126,17 @@ def test_force_override_bypasses_guard() -> None:
                       return_value=ops.StepResult("start_watcher_task", True, "OK", 1.0)):
         result = ops.start_all(_StubSettings(), force=True)
 
-    # Guard didn't run at all.
+    # No guard step at all.
     step_names = [s.name for s in result.steps]
-    assert "vram_guard" not in step_names
+    assert "budget_guard" not in step_names
     assert "start_lms_server" in step_names
 
 
-def test_guard_silent_when_no_gpu_detected() -> None:
-    """nvidia-smi unavailable (CPU-only machine) → guard is a no-op,
-    Start All proceeds normally."""
-    with patch.object(ops, "_gpu_status_via_nvidia_smi", return_value=None), \
+def test_guard_silent_when_probe_returns_none() -> None:
+    """If nvidia-smi or the RAM probe fails (returns None), guard
+    silently proceeds — better to risk a load attempt than to leave
+    CPU-only / GPU-less setups stuck behind a False refusal."""
+    with patch.object(ops, "_budget_verdict_for_code_rag", return_value=None), \
          patch("code_rag.util.stop_marker.clear_intentionally_stopped",
                return_value=True), \
          patch.object(ops, "start_lms_server",
@@ -132,28 +147,6 @@ def test_guard_silent_when_no_gpu_detected() -> None:
                       return_value=ops.StepResult("start_watcher_task", True, "OK", 1.0)):
         result = ops.start_all(_StubSettings())
 
-    # No vram_guard step recorded — silently proceed.
     step_names = [s.name for s in result.steps]
-    assert "vram_guard" not in step_names
+    assert "budget_guard" not in step_names
     assert "start_lms_server" in step_names
-
-
-def test_guard_at_exactly_threshold_passes() -> None:
-    """Phase 47 contract: > 50%, not >=. Exactly 50% is allowed
-    (avoid flapping at the boundary)."""
-    with patch.object(ops, "_gpu_status_via_nvidia_smi",
-                      return_value=_gpu(used_gb=11.25)), \
-         patch("code_rag.util.stop_marker.clear_intentionally_stopped",
-               return_value=True), \
-         patch.object(ops, "start_lms_server",
-                      return_value=ops.StepResult("start_lms_server", True, "ready", 1.0)), \
-         patch.object(ops, "load_model",
-                      return_value=ops.StepResult("load_model(x)", True, "loaded", 1.0)), \
-         patch.object(ops, "start_watcher_task",
-                      return_value=ops.StepResult("start_watcher_task", True, "OK", 1.0)):
-        # 11.25 / 22.5 = 0.50 exactly — guard should accept.
-        result = ops.start_all(_StubSettings())
-
-    guard_steps = [s for s in result.steps if s.name == "vram_guard"]
-    assert len(guard_steps) == 1
-    assert guard_steps[0].ok is True

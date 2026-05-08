@@ -406,7 +406,44 @@ def _index_status(settings: Settings) -> dict[str, Any]:
 # ---- start operations -------------------------------------------------------
 
 
-_VRAM_GUARD_THRESHOLD = 0.50   # bail if more than this fraction is already used
+def _budget_verdict_for_code_rag():
+    """Phase 52: return a BudgetVerdict for the code-rag project given
+    current resource state, or None if probes failed (treat-as-pass on
+    no-data so we don't block on a flaky probe).
+    """
+    from code_rag.dashboard.resource_budget import (
+        CurrentResources, can_start_project,
+    )
+    gpu = _gpu_status_via_nvidia_smi()
+    if gpu is None:
+        return None   # no GPU detected → don't block CPU-only setups
+
+    # RAM via Win32_OperatingSystem.
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "$o=Get-CimInstance Win32_OperatingSystem; "
+             "[PSCustomObject]@{tot=$o.TotalVisibleMemorySize;"
+             "free=$o.FreePhysicalMemory} | ConvertTo-Json -Compress"],
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+            timeout=5.0, check=False,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+        import json as _j
+        m = _j.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else {}
+        ram_total_gb = float(m.get("tot", 0)) / 1024 / 1024
+        ram_used_gb = (float(m.get("tot", 0)) - float(m.get("free", 0))) / 1024 / 1024
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+
+    cur = CurrentResources(
+        ram_used_gb=ram_used_gb,
+        ram_total_gb=ram_total_gb,
+        vram_used_gb=float(gpu.get("vram_used_gb", 0)),
+        vram_total_gb=float(gpu.get("vram_total_gb", 0)),
+    )
+    return can_start_project("code-rag", cur)
 
 
 def start_all(settings: Settings, *, force: bool = False) -> CompositeResult:
@@ -418,42 +455,35 @@ def start_all(settings: Settings, *, force: bool = False) -> CompositeResult:
     Phase 39: also clears the `data/.stopped` intent marker so the reaper
     resumes its normal auto-respawn-on-crash behavior.
 
-    Phase 47: if more than 50% of GPU VRAM is already used by other
-    processes (ComfyUI, COD, browsers with hardware accel, etc.),
-    Start All BAILS with an actionable message rather than blasting
-    in and OOM-ing the embedder load. The user observed today that
-    Start All on a half-full GPU produces a 109-second `lms load`
-    timeout with "Unknown error" — that's LM Studio failing to allocate
-    KV-cache space. Force-override via `force=True` (dashboard query
-    param `?force=1`) when the user explicitly wants to proceed anyway.
+    Phase 47 → Phase 52: budget-aware refuse. The simple "> 50% VRAM"
+    check from Phase 47 is replaced with the resource_budget arbitrator:
+    we know code-rag's expected RAM + VRAM cost (~14 GB / 12 GB for the
+    full stack with HyDE), so we check `current_used + cost <= total
+    - reserve` and bail with an actionable message if not. Force-
+    override via `force=True` (dashboard query param `?force=1`).
     """
     res = CompositeResult()
 
-    # Phase 47: VRAM safety gate — runs FIRST so we don't even clear
-    # the stop marker if we're going to refuse anyway. If nvidia-smi
-    # is unavailable we proceed (no GPU detected → no risk → don't
-    # block CPU-only setups).
+    # Phase 52: budget-aware safety gate — uses the code-rag project's
+    # declared RAM + VRAM cost from resource_budget.PROJECT_COSTS instead
+    # of the previous generic "> 50% VRAM" check. Same intent (refuse
+    # before triggering an OOM cascade) but the reasoning is sharper:
+    # we know exactly what code-rag needs and what's left after reserve.
     if not force:
-        gpu = _gpu_status_via_nvidia_smi()
-        if gpu is not None:
-            used = float(gpu.get("vram_used_gb", 0))
-            total = max(1.0, float(gpu.get("vram_total_gb", 1)))
-            frac = used / total
-            if frac > _VRAM_GUARD_THRESHOLD:
-                threshold_pct = int(_VRAM_GUARD_THRESHOLD * 100)
-                detail = (
-                    f"VRAM at {frac*100:.0f}% ({used:.1f}/{total:.1f} GB) — "
-                    f"refusing to start with > {threshold_pct}% already used. "
-                    f"Free GPU memory first (close ComfyUI / games / browser "
-                    f"tabs), or pass force=true to override."
-                )
+        verdict = _budget_verdict_for_code_rag()
+        if verdict is not None:
+            if not verdict.ok:
                 res.add(StepResult(
-                    "vram_guard", False, detail, duration_ms=0.0,
+                    "budget_guard", False, verdict.suggestion,
+                    duration_ms=0.0,
                 ))
                 return res
             res.add(StepResult(
-                "vram_guard", True,
-                f"VRAM at {frac*100:.0f}% ({used:.1f}/{total:.1f} GB) — OK to proceed",
+                "budget_guard", True,
+                f"OK: code-rag needs {verdict.cost_ram_gb:.1f} GB RAM + "
+                f"{verdict.cost_vram_gb:.1f} GB VRAM; "
+                f"{verdict.available_ram_gb:.1f} GB RAM + "
+                f"{verdict.available_vram_gb:.1f} GB VRAM available",
                 duration_ms=0.0,
             ))
 

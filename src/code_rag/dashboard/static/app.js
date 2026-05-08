@@ -358,6 +358,85 @@
     projectsTimer = setInterval(refreshProjects, PROJECTS_POLL_MS);
   }
 
+  // ---- Phase 52: Resource Budget panel ----
+  // Polls /api/budget every 5s alongside projects. Renders per-project
+  // can-start verdicts: green ✓ if there's headroom, red ✗ if start
+  // would OOM (with the suggestion text inline so the user knows what
+  // to free).
+  let budgetTimer = null;
+
+  function budgetRow(verdict, current) {
+    const div = document.createElement('div');
+    div.className = 'budget-row ' + (verdict.ok ? 'ok' : 'blocked');
+    const icon = verdict.ok ? '✓' : '✗';
+    const status = verdict.ok ? 'can start' : 'BLOCKED';
+    const cost = `cost: ${verdict.cost_ram_gb} GB RAM · ${verdict.cost_vram_gb} GB VRAM`;
+    const avail = `available: ${verdict.available_ram_gb} GB RAM · ${verdict.available_vram_gb} GB VRAM`;
+    let html = `
+      <div class="budget-row-head">
+        <span class="budget-icon">${icon}</span>
+        <strong>${escapeHtml(verdict.label)}</strong>
+        <span class="budget-status-text">${status}</span>
+      </div>
+      <div class="budget-meta">${escapeHtml(cost)} · ${escapeHtml(avail)}</div>
+    `;
+    if (!verdict.ok && verdict.suggestion) {
+      html += `<div class="budget-suggestion">${escapeHtml(verdict.suggestion)}</div>`;
+    }
+    if (verdict.notes) {
+      html += `<div class="budget-notes" title="${escapeHtml(verdict.notes)}">notes ↗</div>`;
+    }
+    div.innerHTML = html;
+    return div;
+  }
+
+  async function refreshBudget() {
+    try {
+      const data = await getJSON('/api/budget');
+      const rows = $('budget-rows');
+      const status = $('budget-status');
+      if (!rows) return;
+      rows.innerHTML = '';
+      const cur = data.current || {};
+      // Top summary line: current usage vs total minus reserves.
+      const reserves = data.reserves || {};
+      const summary = document.createElement('div');
+      summary.className = 'budget-summary';
+      summary.innerHTML = `
+        <div>RAM: <strong>${cur.ram_used_gb} / ${cur.ram_total_gb} GB</strong>
+             <span class="dim">(reserve ${reserves.ram_reserve_gb} GB)</span></div>
+        <div>VRAM: <strong>${cur.vram_used_gb} / ${cur.vram_total_gb} GB</strong>
+             <span class="dim">(reserve ${reserves.vram_reserve_gb} GB)</span></div>
+      `;
+      rows.appendChild(summary);
+      for (const v of (data.verdicts || [])) {
+        rows.appendChild(budgetRow(v, cur));
+      }
+      if (status) {
+        const blocked = (data.verdicts || []).filter(v => !v.ok).length;
+        const total = (data.verdicts || []).length;
+        if (blocked === 0) {
+          status.textContent = `${total} ready`;
+          status.className = 'status-pill ok';
+        } else {
+          status.textContent = `${blocked} of ${total} blocked`;
+          status.className = 'status-pill warn';
+        }
+      }
+    } catch (e) {
+      const status = $('budget-status');
+      if (status) {
+        status.textContent = 'probe failed';
+        status.className = 'status-pill err';
+      }
+    }
+  }
+
+  function startBudgetPolling() {
+    refreshBudget();
+    budgetTimer = setInterval(refreshBudget, PROJECTS_POLL_MS);
+  }
+
   // Phase 51: per-row action delegation. Rows are re-rendered every 5s so
   // we can't bind a listener per button — single delegated listener on the
   // grid catches clicks for whichever row the user hit.
@@ -444,5 +523,6 @@
     startPolling();
     startProjectsPolling();   // Phase 50: unified command center poll
     wireProjectActions();     // Phase 51: per-row run/stop/kill buttons
+    startBudgetPolling();     // Phase 52: resource budget panel
   });
 })();

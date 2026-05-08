@@ -355,6 +355,91 @@ async def eval_history(req: Request) -> JSONResponse:
     })
 
 
+async def budget(_req: Request) -> JSONResponse:
+    """Phase 52: GET /api/budget — return current resource state +
+    per-project verdict (can-start / refuse + suggestion).
+
+    Lets the dashboard render budget badges next to each project card
+    without needing to compute the verdict client-side. The probe is
+    cheap (2 PowerShell/nvidia-smi calls + math) but still runs in a
+    worker thread to keep the event loop free.
+    """
+    s = _settings_or_500()
+    if isinstance(s, JSONResponse):
+        return s
+    try:
+        payload = await asyncio.wait_for(
+            asyncio.to_thread(_compute_budget_state),
+            timeout=15.0,
+        )
+    except asyncio.TimeoutError:
+        return JSONResponse({"error": "budget probe timed out"}, status_code=504)
+    return JSONResponse(payload)
+
+
+def _compute_budget_state() -> dict[str, Any]:
+    """Sync helper invoked via to_thread by the budget endpoint."""
+    from code_rag.dashboard.resource_budget import (
+        CurrentResources,
+        RAM_RESERVE_GB,
+        VRAM_RESERVE_GB,
+        get_all_verdicts,
+        verdict_to_dict,
+    )
+    # Reuse the existing GPU probe from operations.py.
+    gpu = ops._gpu_status_via_nvidia_smi()
+    # Win32_OperatingSystem via PowerShell for RAM totals (same shape
+    # as elsewhere in the dashboard, no new dependency).
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "$o=Get-CimInstance Win32_OperatingSystem; "
+             "[PSCustomObject]@{tot=$o.TotalVisibleMemorySize;"
+             "free=$o.FreePhysicalMemory} | ConvertTo-Json -Compress"],
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+            timeout=5.0, check=False,
+            creationflags=0x08000000,
+        )
+        import json as _j
+        m = _j.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else {}
+        ram_total_gb = float(m.get("tot", 0)) / 1024 / 1024
+        ram_used_gb = (float(m.get("tot", 0)) - float(m.get("free", 0))) / 1024 / 1024
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        ram_total_gb = 0.0
+        ram_used_gb = 0.0
+
+    if gpu:
+        vram_total_gb = float(gpu.get("vram_total_gb", 0))
+        vram_used_gb = float(gpu.get("vram_used_gb", 0))
+    else:
+        vram_total_gb = 0.0
+        vram_used_gb = 0.0
+
+    cur = CurrentResources(
+        ram_used_gb=ram_used_gb,
+        ram_total_gb=ram_total_gb,
+        vram_used_gb=vram_used_gb,
+        vram_total_gb=vram_total_gb,
+        heaviest_consumer_label=None,
+    )
+    verdicts = [verdict_to_dict(v) for v in get_all_verdicts(cur)]
+    return {
+        "current": {
+            "ram_used_gb":   round(ram_used_gb, 1),
+            "ram_total_gb":  round(ram_total_gb, 1),
+            "vram_used_gb":  round(vram_used_gb, 1),
+            "vram_total_gb": round(vram_total_gb, 1),
+        },
+        "reserves": {
+            "ram_reserve_gb":  RAM_RESERVE_GB,
+            "vram_reserve_gb": VRAM_RESERVE_GB,
+        },
+        "verdicts": verdicts,
+    }
+
+
 async def task_run(req: Request) -> JSONResponse:
     """Phase 51: POST /api/tasks/run  body: {"name": "<task name>"}.
 
@@ -465,6 +550,7 @@ def build_app() -> Starlette:
         Route("/api/models/unload",      endpoint=unload_model,    methods=["POST"]),
         Route("/api/eval-history",       endpoint=eval_history,    methods=["GET"]),
         Route("/api/projects",           endpoint=projects,        methods=["GET"]),
+        Route("/api/budget",             endpoint=budget,          methods=["GET"]),
         Route("/api/tasks/run",          endpoint=task_run,        methods=["POST"]),
         Route("/api/tasks/stop",         endpoint=task_stop,       methods=["POST"]),
         Route("/api/processes/kill",     endpoint=process_kill,    methods=["POST"]),

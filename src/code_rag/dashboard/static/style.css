@@ -406,3 +406,91 @@ code { font-family: var(--mono); font-size: 12px; color: var(--text-mute); }
 .row-btn-stop:hover:not(:disabled)   { background: #2a230d; }
 .row-btn-kill   { color: #ff9a96; border-color: #4a2222; }
 .row-btn-kill:hover:not(:disabled)   { background: #2a1212; }
+
+/* ---- Phase 52: Resource Budget panel ---- */
+.budget {
+  margin: 24px 18px 0;
+}
+.budget > .card-header {
+  margin-bottom: 12px;
+}
+.budget-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.budget-summary {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 10px 14px;
+  background: #0d1117;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-mute);
+}
+.budget-summary .dim {
+  color: var(--text-dim);
+  font-size: 10px;
+}
+.budget-row {
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 12px;
+  background: #0d1117;
+}
+.budget-row.ok {
+  border-left: 3px solid #2d4a35;
+}
+.budget-row.blocked {
+  border-left: 3px solid #4a2222;
+  background: #150d0d;
+}
+.budget-row-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text);
+}
+.budget-icon {
+  font-weight: bold;
+  font-size: 14px;
+  width: 18px;
+  display: inline-block;
+  text-align: center;
+}
+.budget-row.ok .budget-icon      { color: #9ad7a4; }
+.budget-row.blocked .budget-icon { color: #ff9a96; }
+.budget-status-text {
+  margin-left: auto;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+}
+.budget-row.ok .budget-status-text      { color: #9ad7a4; }
+.budget-row.blocked .budget-status-text { color: #ff9a96; }
+.budget-meta {
+  margin-top: 4px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.budget-suggestion {
+  margin-top: 6px;
+  padding: 6px 10px;
+  background: #1f1313;
+  border-radius: 4px;
+  color: #ffb499;
+  font-size: 11px;
+}
+.budget-notes {
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--text-dim);
+  cursor: help;
+}
