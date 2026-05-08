@@ -15,14 +15,18 @@
         <span class="version" id="version">·</span>
       </div>
       <div class="topbar-actions">
-        <!-- Start/Stop all targets the code-rag stack only (LM Studio +
-             watcher + MCP servers). Other projects are managed via Task
-             Scheduler / their own scripts. The button flips Start ↔ Stop
-             based on the current code-rag state from /api/status. -->
+        <!-- Phase 55: this button controls the CODE-RAG stack (LM Studio
+             + watcher + MCP servers), not all 3 projects. YouTubeBot and
+             MNQAlpha are managed via Task Scheduler / their own scripts;
+             use the per-card buttons below for those.
+
+             Phase 52's budget_guard refuses the action if (current_used
+             + code-rag cost) would exceed (total - reserve), so a click
+             here can't OOM the GPU even when other projects are heavy. -->
         <button id="btn-toggle-all" class="btn btn-primary" type="button"
                 data-action="start" data-target="all"
-                title="Start/Stop the code-rag stack">
-          <span class="btn-dot"></span> <span class="btn-label">Start all</span>
+                title="Start the code-rag stack only (LM Studio + watcher + MCP servers, ~14 GB RAM + 12 GB VRAM). Refused by the budget guard if there isn't enough headroom.">
+          <span class="btn-dot"></span> <span class="btn-label">Start code-rag</span>
         </button>
       </div>
     </header>

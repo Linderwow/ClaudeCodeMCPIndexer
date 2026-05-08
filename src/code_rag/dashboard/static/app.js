@@ -50,8 +50,12 @@
     lms:     { start: 'btn btn-ghost',      stop: 'btn btn-ghost-danger' },
     watcher: { start: 'btn btn-ghost',      stop: 'btn btn-ghost-danger' },
   };
+  // Phase 55: 'all' controls the code-rag stack (LM Studio + watcher +
+  // MCP servers), not the union of all 3 projects. Renamed so the
+  // button doesn't imply 'start everything' — that would OOM the GPU
+  // when YouTubeBot and code-rag both want VRAM.
   const TOGGLE_LABELS = {
-    all:     { start: 'Start all',          stop: 'Stop all' },
+    all:     { start: 'Start code-rag',     stop: 'Stop code-rag' },
     lms:     { start: 'Start server',       stop: 'Stop server' },
     watcher: { start: 'Start watcher',      stop: 'Stop watcher' },
   };
