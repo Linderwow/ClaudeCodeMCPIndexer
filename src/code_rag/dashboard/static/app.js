@@ -461,6 +461,36 @@
           status.className = 'status-pill warn';
         }
       }
+
+      // Phase 58: gate the topbar 'Start code-rag' button on the budget
+      // verdict. Phase 52 already refuses the action server-side if the
+      // verdict says BLOCKED, but the button visually pretends it's a
+      // happy path. When code-rag's verdict is BLOCKED AND the button
+      // is currently in 'start' mode, disable it + surface the
+      // suggestion as the tooltip. When code-rag is already running
+      // (button is in 'stop' mode) leave it enabled — stopping is
+      // never resource-constrained.
+      const codeRagVerdict = (data.verdicts || []).find(
+        v => v.project_id === 'code-rag',
+      );
+      const btn = $('btn-toggle-all');
+      if (btn && codeRagVerdict) {
+        const isStart = btn.dataset.action === 'start';
+        if (isStart && !codeRagVerdict.ok) {
+          btn.disabled = true;
+          btn.classList.add('btn-blocked');
+          btn.title = `BLOCKED: ${codeRagVerdict.suggestion}`;
+        } else {
+          btn.disabled = false;
+          btn.classList.remove('btn-blocked');
+          // Restore the default tooltip set in index.html.
+          if (isStart) {
+            btn.title = 'Start the code-rag stack only (LM Studio + watcher + MCP servers, ~14 GB RAM + 12 GB VRAM). Refused by the budget guard if there isn\'t enough headroom.';
+          } else {
+            btn.title = 'Stop the code-rag stack';
+          }
+        }
+      }
     } catch (e) {
       const status = $('budget-status');
       if (status) {

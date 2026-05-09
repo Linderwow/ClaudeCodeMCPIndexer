@@ -132,6 +132,25 @@ code { font-family: var(--mono); font-size: 12px; color: var(--text-mute); }
 }
 .btn-danger:hover { background: #ff6259; }
 
+/* Phase 58: 'blocked by budget guard' state for the topbar Start
+   button. Visually distinct from the .is-busy / disabled-during-
+   action style — this isn't a transient busy state, it's a refusal
+   that won't lift until the user frees RAM/VRAM. Greyed background,
+   muted text, no hover interaction. The tooltip carries the
+   suggestion text for actionable detail. */
+.btn.btn-blocked,
+.btn.btn-blocked:hover {
+  background: #2a1f1f;
+  color: #ff9a96;
+  border-color: #4a2222;
+  cursor: not-allowed;
+  opacity: 1;             /* override .btn:disabled fade — we want
+                             the red border visible, not faded */
+  font-weight: 500;
+}
+.btn.btn-blocked .btn-dot { background: var(--danger); opacity: 0.8; }
+.btn.btn-blocked::before  { content: '⚠ '; }
+
 .btn-ghost          { background: transparent; }
 .btn-ghost:hover    { background: var(--accent-soft); border-color: var(--accent); color: #d2f5d8; }
 .btn-ghost-danger   { background: transparent; }
