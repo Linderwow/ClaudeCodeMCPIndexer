@@ -48,8 +48,51 @@ class LMStudioEmbedder(Embedder):
         if self._client is None:
             async with self._lock:
                 if self._client is None:
-                    self._client = httpx.AsyncClient(base_url=self._base_url, timeout=self._timeout)
+                    # Phase 60-O (audit P2): explicit connection pool tuning.
+                    # Defaults (20 keepalive / 100 max) are enough but the
+                    # 5s default keepalive_expiry tears down idle connections
+                    # between bursts -- on a re-index hitting /embeddings at
+                    # 44 req/s, that's 2-5ms TCP/TLS handshake on every batch
+                    # boundary. Bump keepalive_expiry to 120s so connections
+                    # survive the indexer's per-file gaps. http2=True lets
+                    # parallel arms multiplex on a single connection during
+                    # search.
+                    limits = httpx.Limits(
+                        max_keepalive_connections=16,
+                        max_connections=16,
+                        keepalive_expiry=120.0,
+                    )
+                    self._client = httpx.AsyncClient(
+                        base_url=self._base_url,
+                        timeout=self._timeout,
+                        limits=limits,
+                    )
         return self._client
+
+    async def _raw_embed_with_retry(self, texts: Sequence[str]) -> list[list[float]]:
+        # Phase 60-O (audit IPC#4): retry transient 5xx with backoff so a
+        # single vLLM 503 (GPU pressure spike) doesn't abort an entire
+        # multi-batch embed call mid-stream. Pass-through on 4xx (those are
+        # client-side bugs and retrying just papers them over).
+        last_exc: Exception | None = None
+        for attempt in (0, 1, 2):
+            try:
+                return await self._raw_embed(texts)
+            except httpx.HTTPStatusError as e:
+                last_exc = e
+                if e.response.status_code < 500 or attempt == 2:
+                    raise
+                import asyncio as _aio
+                await _aio.sleep(1.0 * (2 ** attempt))  # 1s, 2s
+            except (httpx.HTTPError, httpx.RemoteProtocolError) as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+                import asyncio as _aio
+                await _aio.sleep(1.0 * (2 ** attempt))
+        # Unreachable, but mypy demands.
+        assert last_exc is not None
+        raise last_exc
 
     async def health(self) -> None:
         """Ping /v1/models and, if dim is unknown, probe it via a 1-token embedding."""
@@ -86,7 +129,7 @@ class LMStudioEmbedder(Embedder):
         out: list[list[float]] = []
         for i in range(0, len(texts), self._batch):
             chunk = texts[i : i + self._batch]
-            vecs = await self._raw_embed(chunk)
+            vecs = await self._raw_embed_with_retry(chunk)
             if any(len(v) != self._dim for v in vecs):
                 raise RuntimeError(
                     f"Embedding dim drift: expected {self._dim}, got {[len(v) for v in vecs]}"

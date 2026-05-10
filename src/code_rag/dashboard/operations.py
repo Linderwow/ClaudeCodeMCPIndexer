@@ -229,7 +229,12 @@ def _now_iso() -> str:
 # which are user-initiated (Start all / Stop all / per-model unload buttons)
 # and which we trigger ourselves -- so we know to invalidate the cache after.
 _LMS_API_CACHE: tuple[float, dict[str, Any]] = (0.0, {})
-_LMS_API_TTL_S = 3.0
+# Phase 60-O (audit P3): bumped from 3.0 -> 5.0. Dashboard polls every 2s,
+# so 3s TTL meant every other poll missed cache and paid the full
+# /api/v0/models round-trip. 5s TTL is invalidated explicitly via
+# invalidate_lms_cache() on user-initiated state changes (Start/Stop), so
+# stale data isn't a concern. Cuts LMS HTTP traffic by ~60%.
+_LMS_API_TTL_S = 5.0
 
 
 def _lms_fetch_state(base_url: str) -> dict[str, Any]:
@@ -472,6 +477,19 @@ def _index_status(settings: Settings) -> dict[str, Any]:
     # point we delete the marker so it doesn't linger past the recovery).
     wipe_marker = settings.paths.data_dir / ".wipe_recovery"
     wipe_marker_active = wipe_marker.exists()
+    # Phase 60-O (audit IPC#10): max-age safety on the wipe_recovery
+    # marker. If a stalled reindex pinned the marker, we don't want it to
+    # show "wipe recovery" forever -- after 24h, treat it as stale and
+    # tear down.
+    if wipe_marker_active:
+        try:
+            import time as _t
+            age_s = _t.time() - wipe_marker.stat().st_mtime
+            if age_s > 24 * 3600:
+                wipe_marker.unlink(missing_ok=True)
+                wipe_marker_active = False
+        except OSError:
+            pass
     state = None
     if chunk_count and vector_count is not None:
         # 95%-of-chunks recovery threshold: anything above and we declare

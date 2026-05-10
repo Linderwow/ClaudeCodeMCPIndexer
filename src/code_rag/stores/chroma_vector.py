@@ -138,11 +138,32 @@ class ChromaVectorStore(VectorStore):
         self._require().delete(ids=list(ids))
 
     def delete_by_path(self, path: str) -> int:
+        # Phase 60-O (audit P6): the previous implementation called
+        # `coll.count()` BEFORE and AFTER the delete to compute the exact
+        # number of rows purged. Each count() is an O(N) sqlite scan of the
+        # embeddings table -- on an 86k-chunk corpus that's ~10-15 ms per
+        # call x 27k files x 2 calls = ~10-15 minutes of pure bookkeeping
+        # per reindex.
+        #
+        # The indexer only uses the return as a binary signal
+        # (`1 if purged else 0` at indexer.py:487/565), so we replace the
+        # two count() calls with one targeted `coll.get(where={"path": p})`
+        # which only fetches matching IDs (no docs / metas / embeddings).
+        # That call is O(matches), not O(corpus). Return 0 when there are
+        # no matches (preserving the test_phase35_freshness contract that
+        # already-gone paths report 0), 1 otherwise.
         coll = self._require()
-        before = int(coll.count())
+        try:
+            ids_for_path = coll.get(
+                where=cast(Any, {"path": path}),
+                include=[],
+            ).get("ids", [])
+        except Exception:
+            ids_for_path = []
+        if not ids_for_path:
+            return 0
         coll.delete(where=cast(Any, {"path": path}))
-        after = int(coll.count())
-        return max(0, before - after)
+        return 1
 
     # ---- reads --------------------------------------------------------------
 

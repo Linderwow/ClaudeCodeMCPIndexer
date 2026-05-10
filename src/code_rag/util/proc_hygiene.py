@@ -189,26 +189,66 @@ class SingletonLock:
 
     def __enter__(self) -> SingletonLock:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        # Try to read an existing lock.
-        if self._path.exists():
+        # Phase 60-O (audit IPC#1): use O_CREAT|O_EXCL atomic-create as the
+        # primary acquire path. The previous read-then-write had a TOCTOU
+        # window: two callers within ~5 ms could both see "no live holder"
+        # and both write their own PID -- last-writer wins, both proceed,
+        # spawning duplicates (the exact failure Phase 60-N was meant to
+        # prevent). With O_EXCL, only one caller succeeds at create; losers
+        # fall through to the read-existing path and check liveness.
+        my_pid = os.getpid()
+        try:
+            fd = os.open(
+                str(self._path),
+                os.O_CREAT | os.O_EXCL | os.O_RDWR,
+                0o644,
+            )
             try:
-                existing = int(self._path.read_text("utf-8").strip())
-            except (ValueError, OSError):
-                existing = -1
-            if existing > 0 and is_process_alive(existing):
-                # Live owner — don't steal.
-                log.info("proc_hygiene.singleton_busy",
-                         path=str(self._path), holder_pid=existing)
-                self.acquired = False
-                return self
-            # Stale — overwrite below.
-            log.info("proc_hygiene.singleton_stale",
-                     path=str(self._path), stale_pid=existing)
+                os.write(fd, str(my_pid).encode("utf-8"))
+            finally:
+                os.close(fd)
+            self.acquired = True
+            log.info("proc_hygiene.singleton_acquired",
+                     path=str(self._path), pid=my_pid)
+            return self
+        except FileExistsError:
+            pass  # fall through to existing-holder check
 
-        self._path.write_text(str(os.getpid()), encoding="utf-8")
+        # File already exists — check if the holder is alive.
+        try:
+            existing = int(self._path.read_text("utf-8").strip())
+        except (ValueError, OSError):
+            existing = -1
+        if existing > 0 and is_process_alive(existing):
+            # Live owner — don't steal.
+            log.info("proc_hygiene.singleton_busy",
+                     path=str(self._path), holder_pid=existing)
+            self.acquired = False
+            return self
+        # Stale — best-effort steal. There IS still a small TOCTOU here
+        # (two stealers could both unlink + create), but stale recovery is
+        # the cold-start path and far less frequent than the hot-path race
+        # we just closed with O_EXCL.
+        log.info("proc_hygiene.singleton_stale",
+                 path=str(self._path), stale_pid=existing)
+        try:
+            self._path.unlink(missing_ok=True)
+            fd = os.open(
+                str(self._path),
+                os.O_CREAT | os.O_EXCL | os.O_RDWR,
+                0o644,
+            )
+            try:
+                os.write(fd, str(my_pid).encode("utf-8"))
+            finally:
+                os.close(fd)
+        except FileExistsError:
+            # Another stealer beat us. Bow out cleanly.
+            self.acquired = False
+            return self
         self.acquired = True
         log.info("proc_hygiene.singleton_acquired",
-                 path=str(self._path), pid=os.getpid())
+                 path=str(self._path), pid=my_pid)
         return self
 
     def __exit__(self, *_exc: object) -> None:

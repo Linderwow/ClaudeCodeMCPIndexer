@@ -227,7 +227,14 @@ def index(ctx: click.Context, path_: Path | None) -> None:
         try:
             vec.open(meta)
             lex.open()
-            graph.open()
+            # Phase 60-O (audit C3): Kuzu single-writers graph.kz. The watcher
+            # uses GraphIngester.transient which opens+closes per file event;
+            # there's a TOCTOU window between cmd_index's watcher.lock alive
+            # check and Kuzu's lock acquire where a file event can race in.
+            # KuzuGraphStore.open already supports retry_seconds -- use a
+            # generous 30s here so any single transient watcher open has time
+            # to finish before we error out.
+            graph.open(retry_seconds=30.0)
             hashes.open()
         except Exception as e:
             click.echo(f"FAIL  index open: {e}", err=True)
@@ -612,7 +619,10 @@ def watch(ctx: click.Context) -> None:
     """Watch configured roots and incrementally reindex on change.
 
     Debounced (config.toml [watcher].debounce_ms). Safe to run unattended --
-    designed to be invoked at login by Task Scheduler (see docs/autostart.md).
+    designed to be invoked at login by Task Scheduler. The canonical entry
+    point in production is `python -m code_rag.autostart_bootstrap` (see
+    that module for the boot chain); this CLI command is the lightweight
+    foreground variant.
 
     Phase 32: refuses to start a second watcher (singleton lockfile). Two
     watchers indexing the same Chroma collection at once would race on

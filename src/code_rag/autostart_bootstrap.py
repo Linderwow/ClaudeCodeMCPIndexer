@@ -227,13 +227,42 @@ async def _run() -> int:
             _plain_log(autostart_log, f"embedder health deferred: {e}")
 
         try:
+            # Phase 60-O (audit C2): `embedder.dim` is a property that RAISES
+            # when not yet probed -- the previous `embedder.dim if embedder.dim
+            # > 0 else 1` ternary couldn't actually short-circuit because the
+            # first read raises before the comparison runs. Read the underlying
+            # `_dim` attribute (default 0) so the guard works.
+            _raw_dim = getattr(embedder, "_dim", 0)
+            embedder_dim = _raw_dim if _raw_dim > 0 else 1
             meta = ChromaVectorStore.build_meta(
                 embedder_kind=settings.embedder.kind,
                 embedder_model=embedder.model,
-                embedder_dim=embedder.dim if embedder.dim > 0 else 1,
+                embedder_dim=embedder_dim,
             )
-            vec.open(meta)
-            lex.open()
+            # Phase 60-O (audit C1): chromadb's `PersistentClient(path=...)`
+            # runs SQLite WAL recovery on open with NO timeout. A half-corrupt
+            # chroma.sqlite3 from an unclean shutdown can hang here forever
+            # while the bootstrap holds watcher.lock -- the user observed a
+            # 30-min zombie holding the lock that never reached
+            # "watcher starting." Wrap in an asyncio.wait_for so a hang is
+            # surfaced rather than silently consuming the boot.
+            _plain_log(autostart_log,
+                       f"opening chroma (dim={embedder_dim})...")
+            await asyncio.wait_for(
+                asyncio.to_thread(vec.open, meta), timeout=120.0,
+            )
+            _plain_log(autostart_log, "chroma opened")
+            await asyncio.wait_for(
+                asyncio.to_thread(lex.open), timeout=60.0,
+            )
+            _plain_log(autostart_log, "lex opened")
+        except asyncio.TimeoutError:
+            _plain_log(autostart_log,
+                       "open stores TIMEOUT (>120s on chroma OR >60s on lex) "
+                       "-- likely WAL recovery on a corrupt sqlite. Bailing "
+                       "with rc=4 so Task Scheduler restart can retry.")
+            log.exception("autostart.open_timeout")
+            return 4
         except Exception as e:
             _plain_log(autostart_log, f"open stores FAILED: {e}")
             log.exception("autostart.open_failed")
@@ -281,7 +310,13 @@ async def _run() -> int:
         except Exception as e:
             _plain_log(autostart_log, f"wipe-detector hashes.count failed: {e}")
 
-        if chroma_count == 0 and fts_count > 0 and hash_count > 0:
+        # Phase 60-O (audit M2): treat fts_count==-1 (probe failure) as
+        # "unknown but consistent with wipe" so the SQLite-locked-by-watcher
+        # case during autostart restart doesn't silently disable detection.
+        # The chroma==0 + hashes>0 invariant already proves the wipe; fts
+        # was just our cross-check.
+        fts_consistent_with_wipe = (fts_count > 0) or (fts_count == -1)
+        if chroma_count == 0 and fts_consistent_with_wipe and hash_count > 0:
             _plain_log(
                 autostart_log,
                 f"WIPE DETECTED: chroma=0 vectors but fts={fts_count} chunks "
@@ -478,6 +513,15 @@ async def _run() -> int:
             )
             try:
                 await watch_forever(settings, indexer)
+            except Exception as e:
+                # Phase 60-O (audit M4): surface watch_forever crashes to the
+                # plain autostart.log so post-mortems don't have to dig
+                # through ~/.code-rag-autostart-failure.log.
+                _plain_log(
+                    autostart_log,
+                    f"watcher CRASHED: {type(e).__name__}: {e}",
+                )
+                raise
             finally:
                 if not janitor_task.done():
                     janitor_task.cancel()
@@ -501,6 +545,12 @@ async def _run() -> int:
         else:
             try:
                 await watch_forever(settings, indexer)
+            except Exception as e:
+                _plain_log(
+                    autostart_log,
+                    f"watcher CRASHED: {type(e).__name__}: {e}",
+                )
+                raise
             finally:
                 # Phase 60-I: even when the janitor is disabled, the
                 # auto-stop task may be running. Tear it down on exit.

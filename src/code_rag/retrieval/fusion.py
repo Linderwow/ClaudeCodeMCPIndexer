@@ -210,13 +210,23 @@ def reciprocal_rank_fusion(
     *,
     k: int = 60,
     top_k: int = 50,
+    weights: Sequence[float] | None = None,
 ) -> list[SearchHit]:
     """Reciprocal Rank Fusion — the classic Cormack/Clarke/Buettcher formula.
 
-        score(doc) = sum_over_lists( 1 / (k + rank_i(doc)) )
+        score(doc) = sum_over_lists( weight_i * 1 / (k + rank_i(doc)) )
 
     k=60 is the standard recipe. Returns hits sorted by fused score desc,
     truncated to top_k. source='hybrid'.
+
+    Phase 60-O (audit Math#1+#2): the previous implementation summed every
+    list at unit weight. With multi-arm vector retrieval (rewriter, HyDE,
+    decompose) we'd have N vector lists vs 1 lexical list -- BM25 was
+    out-voted N:1 even on identifier queries where it should dominate.
+    The `weights` parameter (one per list) lets the caller pass per-arm
+    confidence (rewriter variants get 0.5, originals 1.0) and re-weight
+    the lexical arm to match the vector-arm count. When weights is None,
+    falls back to unit weights (backwards compatible with existing tests).
 
     Each output hit's match_reason is a breadcrumb:
         "hybrid rrf from [vector r2, lexical r1]"
@@ -224,14 +234,22 @@ def reciprocal_rank_fusion(
     Ties are broken by max score across lists (stable). We preserve the first
     Chunk we see for a given id.
     """
+    if weights is None:
+        weights = [1.0] * len(lists)
+    elif len(weights) != len(lists):
+        raise ValueError(
+            f"reciprocal_rank_fusion: got {len(lists)} lists but "
+            f"{len(weights)} weights; counts must match"
+        )
     agg: dict[str, float] = {}
     best: dict[str, SearchHit] = {}
     # per-chunk list of "<source> r<rank>" — used to build match_reason.
     sources: dict[str, list[str]] = {}
-    for hits in lists:
+    for arm_idx, hits in enumerate(lists):
+        w = weights[arm_idx]
         for rank, h in enumerate(hits):
             cid = h.chunk.id
-            agg[cid] = agg.get(cid, 0.0) + 1.0 / (k + rank + 1)
+            agg[cid] = agg.get(cid, 0.0) + w / (k + rank + 1)
             sources.setdefault(cid, []).append(f"{h.source} r{rank + 1}")
             if cid not in best:
                 best[cid] = h

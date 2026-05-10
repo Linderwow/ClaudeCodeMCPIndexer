@@ -316,10 +316,21 @@ class HybridSearcher:
         vec_hits = all_vec_hits
 
         # 3) Fuse — every plan arm contributes a ranked list, plus lexical.
+        # Phase 60-O (audit Math#1+#2): pass per-arm weights to RRF.
+        # Vector arms get their plan-declared weight (rewriter variants 0.5,
+        # originals/decomposed 1.0). The lexical arm is re-weighted to match
+        # the SUM of vector weights -- without this, a 6-vector-arm plan
+        # gives BM25 only 1/(N+1) voting power on identifier queries where
+        # BM25 should dominate. Predicted lift: NL R@1 +0.07-0.10.
+        vec_arm_weights = [arm_w for _arm_text, arm_w in plan]
+        # Defensive: guard against the empty-plan case (shouldn't happen).
+        lex_weight = max(sum(vec_arm_weights), 1.0)
+        rrf_weights = [*vec_arm_weights, lex_weight]
         fused = reciprocal_rank_fusion(
             [*vec_hits_per_arm, lex_hits],
             k=params.rrf_k,
             top_k=max(params.k_rerank_in, params.k_final),
+            weights=rrf_weights,
         )
 
         # 3a) Phase 28: exact-identifier boost BEFORE diversity. If the query

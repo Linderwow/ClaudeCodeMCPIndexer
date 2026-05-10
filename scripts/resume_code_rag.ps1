@@ -64,7 +64,18 @@ function TryAcquireLaunchLock {
         } catch { $existing = -1 }
         $alive = $false
         if ($existing -gt 0) {
-            try { Get-Process -Id $existing -ErrorAction Stop | Out-Null; $alive = $true } catch {}
+            # Phase 60-O (audit C4): use CIM Win32_Process instead of
+            # Get-Process for the alive check. Get-Process returns
+            # access-denied (treated here as "dead") when the holder runs
+            # under a different security token (e.g. SYSTEM via Task
+            # Scheduler) -- which would silently let us steal a live lock
+            # and spawn a duplicate vLLM. CIM Win32_Process returns the row
+            # regardless of token rights, matching the Python-side
+            # is_process_alive semantics (which treats access-denied as alive).
+            try {
+                $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$existing" -ErrorAction Stop
+                if ($null -ne $proc) { $alive = $true }
+            } catch {}
         }
         if ($alive) {
             Log "vllm-launch.lock held by live PID $existing -- another launch in progress; exiting clean."
@@ -287,8 +298,9 @@ function HasLiveLock {
         return $false
     }
     if ($holderPid -le 0) { return $false }
+    # Phase 60-O (audit C4): CIM survives access-denied; Get-Process doesn't.
     try {
-        $proc = Get-Process -Id $holderPid -ErrorAction Stop
+        $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$holderPid" -ErrorAction Stop
         return $null -ne $proc
     } catch {
         return $false
