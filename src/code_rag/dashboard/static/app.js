@@ -199,6 +199,73 @@
     const pct = (typeof idx.reindex_pct === 'number') ? idx.reindex_pct : null;
     const vectors = (typeof idx.vectors === 'number') ? idx.vectors : null;
     const chunks = (typeof idx.chunks === 'number') ? idx.chunks : null;
+
+    // ---- Phase 60-I: Indexing card (always visible) ----
+    // Permanent at-a-glance summary of the index state. Shows coverage,
+    // embedder, and the current state pill (live / catching up / idle /
+    // auto-stopped / user-stopped). The transient `.reindex` card below
+    // handles the live rate+ETA when actively catching up.
+    const idxStatusEl = $('index-status');
+    const idxBar = $('index-bar');
+    if (idxBar && chunks !== null && chunks > 0 && vectors !== null) {
+      const coveragePct = pct !== null ? pct : (100 * vectors / chunks);
+      idxBar.style.width = `${coveragePct.toFixed(1)}%`;
+      idxBar.className =
+        `bar-fill${coveragePct < 50 ? ' err' : coveragePct < 95 ? ' warn' : ''}`;
+      $('index-label').textContent =
+        `${vectors.toLocaleString()} / ${chunks.toLocaleString()} vectors`;
+      $('index-pct').textContent = `${coveragePct.toFixed(1)}%`;
+    } else if (idxBar) {
+      idxBar.style.width = '0%';
+      $('index-label').textContent = chunks ? `0 / ${chunks.toLocaleString()}` : 'no index yet';
+      $('index-pct').textContent = '—';
+    }
+    $('index-embedder-name').textContent = idx.embedder_model || '—';
+    $('index-embedder-dim').textContent =
+      idx.embedder_dim ? `dim ${idx.embedder_dim}` : '';
+
+    // State pill: live / catching up / idle (auto-stopped) / stopped
+    // (user). Determined from lm_studio.server_up + reindex_pct.
+    const lmsUp_idx = !!(s.lm_studio && s.lm_studio.server_up);
+    let stateLabel = 'live';
+    let stateClass = 'status-pill ok';
+    let stateDetail = 'embedder reachable';
+    if (!lmsUp_idx) {
+      stateLabel = 'down';
+      stateClass = 'status-pill err';
+      stateDetail = 'embedder unreachable';
+    } else if (pct !== null && pct < 99.0) {
+      stateLabel = 'catching up';
+      stateClass = 'status-pill warn';
+      stateDetail = `dense lagging fts by ${(100 - pct).toFixed(1)} pp`;
+    }
+    if (idxStatusEl) {
+      idxStatusEl.textContent = stateLabel;
+      idxStatusEl.className = stateClass;
+    }
+    $('index-state-detail').textContent = stateDetail;
+    // Last-activity: relative time since updated_at (when index_meta
+    // was last touched) — proxy for "when did the indexer last run".
+    const updatedAt = idx.updated_at;
+    if (updatedAt) {
+      try {
+        const d = new Date(updatedAt);
+        if (!isNaN(d.getTime())) {
+          const ageS = Math.max(0, (Date.now() - d.getTime()) / 1000);
+          let ageStr;
+          if (ageS < 60) ageStr = `${Math.floor(ageS)}s ago`;
+          else if (ageS < 3600) ageStr = `${Math.floor(ageS / 60)}m ago`;
+          else if (ageS < 86400) ageStr = `${Math.floor(ageS / 3600)}h ago`;
+          else ageStr = `${Math.floor(ageS / 86400)}d ago`;
+          $('index-last-activity').textContent = `updated ${ageStr}`;
+        } else {
+          $('index-last-activity').textContent = '';
+        }
+      } catch { $('index-last-activity').textContent = ''; }
+    } else {
+      $('index-last-activity').textContent = '';
+    }
+
     const reindexEl = $('reindex');
     if (reindexEl) {
       // Phase 60 audit fix: also guard `vectors !== null` so we never call

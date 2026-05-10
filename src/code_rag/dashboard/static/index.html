@@ -34,8 +34,9 @@
       </div>
     </header>
 
-    <!-- Top-level resources card — cross-cutting (RAM/VRAM apply to ALL
-         projects). Single bar each, no per-project split (yet). -->
+    <!-- Top-level grid: Resources (RAM/VRAM/GPU) + Indexing (vectors/
+         chunks/embedder/auto-stop state) side-by-side. Cross-cutting
+         status that applies to the whole stack. -->
     <section class="grid">
       <article class="card" id="card-resources">
         <header class="card-header">
@@ -50,6 +51,36 @@
           <div class="bar"><div class="bar-fill gpu" id="gpu-bar"></div></div>
           <div class="kv small"><span id="gpu-label">—</span><span id="gpu-pct">—</span></div>
           <div class="kv small"><span>GPU util / temp</span><span id="gpu-util">—</span></div>
+        </div>
+      </article>
+
+      <!-- Phase 60-I: Indexing card — always visible, shows the live
+           index state (coverage / embedder / state). The transient
+           `.reindex` card below this grid handles the live rate/ETA
+           during active catch-up; this card is the permanent at-a-
+           glance summary. -->
+      <article class="card" id="card-index">
+        <header class="card-header">
+          <h2>Indexing</h2>
+          <span class="status-pill" id="index-status">probing…</span>
+        </header>
+        <div class="card-body">
+          <h3 class="subhead">Coverage</h3>
+          <div class="bar"><div class="bar-fill" id="index-bar"></div></div>
+          <div class="kv small">
+            <span id="index-label">— / —</span>
+            <span id="index-pct">—</span>
+          </div>
+          <h3 class="subhead">Embedder</h3>
+          <div class="kv small dim">
+            <span id="index-embedder-name">—</span>
+            <span id="index-embedder-dim">—</span>
+          </div>
+          <h3 class="subhead">State</h3>
+          <div class="kv small dim">
+            <span id="index-state-detail">—</span>
+            <span id="index-last-activity">—</span>
+          </div>
         </div>
       </article>
     </section>
