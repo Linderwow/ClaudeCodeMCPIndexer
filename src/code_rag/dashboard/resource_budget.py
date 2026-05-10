@@ -68,15 +68,21 @@ PROJECT_COSTS: dict[str, ProjectCost] = {
     "code-rag": ProjectCost(
         project_id="code-rag",
         label="code-rag (full stack)",
-        ram_gb=14.0,
-        vram_gb=12.0,
+        ram_gb=12.0,
+        vram_gb=11.0,
         notes=(
-            "Embedder qwen3-embedding-4b @ ctx=4096 (~3 GB VRAM, ~2 GB RAM) "
-            "+ HyDE qwen2.5-coder-7b (~8 GB VRAM, ~7 GB RAM if loaded) "
-            "+ 4 MCP servers each holding a cross-encoder (~1.5 GB VRAM, "
-            "~2 GB RAM) + watcher (~1 GB RAM) + dashboard (~0.1 GB RAM). "
-            "If HyDE isn't actively loaded, drop 8 GB VRAM and 7 GB RAM "
-            "from these numbers."
+            "Phase 60-C centralized stack:\n"
+            "  - vLLM embed Qwen3-Embedding-8B-FP8 @ --gpu-memory-utilization 0.50 "
+            "(~7 GB VRAM, ~10 GB RAM)\n"
+            "  - vLLM rerank bge-reranker-v2-m3 @ 0.15 (~3 GB VRAM, ~1 GB RAM)\n"
+            "  - 4 MCP servers (no local cross-encoder anymore — they HTTP-call "
+            "the rerank server) (~0.1 GB VRAM, ~0.5 GB RAM each = 0.4 / 2)\n"
+            "  - watcher (~0.5 GB RAM)\n"
+            "  - dashboard (~0.1 GB RAM)\n"
+            "Phase 60-B disabled HyDE (hyde_model = \"\" in config.toml). "
+            "If you re-enable qwen2.5-coder-7b for HyDE, add 8 GB VRAM + 7 GB RAM "
+            "to this budget — that pushes code-rag past where it can coexist "
+            "with ComfyUI."
         ),
     ),
     "YouTubeBot": ProjectCost(

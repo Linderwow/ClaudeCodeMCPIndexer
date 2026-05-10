@@ -87,6 +87,28 @@ code { font-family: var(--mono); font-size: 12px; color: var(--text-mute); }
 
 .version { color: var(--text-dim); font-size: 12px; font-family: var(--mono); }
 
+/* Phase 60-A3: live status line in the topbar — fills the dead space
+   to the right of the title and tells the user WHY the Start/Stop
+   button shows what it shows. */
+.topbar-status {
+  margin-left: 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  letter-spacing: 0.02em;
+}
+.topbar-status .ts-ok   { color: #9ad7a4; }
+.topbar-status .ts-warn { color: #f5d884; }
+.topbar-status .ts-err  { color: #ff9a96; }
+
+/* Compact key-value rows with a `dim` modifier for tertiary metadata
+   (used in the reindex card for the "via <embedder>" line). */
+.kv.small.dim {
+  color: var(--text-dim);
+  font-size: 10px;
+  margin-top: 2px;
+}
+
 .topbar-actions {
   display: flex;
   gap: 10px;
@@ -483,6 +505,38 @@ code { font-family: var(--mono); font-size: 12px; color: var(--text-mute); }
   font-weight: 500;
 }
 
+/* ---- Phase 60-A2: Reindex-in-progress card. Hidden in steady state.
+       Mirrors `.budget` styling so the panels visually stack. ---- */
+.reindex {
+  margin: 16px 18px 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px 14px 12px;
+}
+.reindex > .card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.reindex > .card-header h2 {
+  margin: 0;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+}
+.reindex .card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.reindex .bar {
+  height: 8px;
+  margin-bottom: 4px;
+}
+
 /* ---- Phase 52: Resource Budget panel (Phase 54: compact) ---- */
 .budget {
   margin: 16px 18px 0;
@@ -525,6 +579,13 @@ code { font-family: var(--mono); font-size: 12px; color: var(--text-mute); }
   border-left: 3px solid #4a2222;
   background: #150d0d;
 }
+/* Phase 60-A3: a project that's currently running. Calmer than blocked
+   (no red), has a subtle blue accent so it's distinct from the
+   "ready-to-start" green. */
+.budget-row.running {
+  border-left: 3px solid #1d4a6a;
+  background: #0d1418;
+}
 .budget-row-head {
   display: flex;
   align-items: center;
@@ -550,6 +611,8 @@ code { font-family: var(--mono); font-size: 12px; color: var(--text-mute); }
 }
 .budget-row.ok .budget-status-text      { color: #9ad7a4; }
 .budget-row.blocked .budget-status-text { color: #ff9a96; }
+.budget-row.running .budget-icon        { color: #6cb6ff; }
+.budget-row.running .budget-status-text { color: #6cb6ff; }
 .budget-meta {
   margin-top: 2px;
   color: var(--text-dim);

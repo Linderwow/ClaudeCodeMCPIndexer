@@ -264,9 +264,16 @@ def _lms_fetch_state(base_url: str) -> dict[str, Any]:
         api_base = api_base[: -len("/v1/")]
     api_base = api_base.rstrip("/")
 
+    # Phase 60: support both LM Studio (/api/v0/models, richer admin info)
+    # AND vLLM / TEI / sglang (/v1/models, OpenAI standard, no `state` field
+    # because every model returned IS loaded). Try the rich endpoint first;
+    # on 404 fall back to /v1/models. This makes the dashboard truthful about
+    # an embedder server being up regardless of which backend the user runs.
+    rich_ok = False
     try:
         r = httpx.get(f"{api_base}/api/v0/models", timeout=2.0)
         if r.status_code == 200:
+            rich_ok = True
             parsed["server_up"] = True
             data = r.json().get("data", []) or []
             for m in data:
@@ -287,6 +294,32 @@ def _lms_fetch_state(base_url: str) -> dict[str, Any]:
                     })
     except (httpx.HTTPError, OSError):
         pass
+
+    # OpenAI-standard fallback: /v1/models. vLLM, TEI, sglang, etc all serve
+    # this. No `state` — we treat every returned model as loaded (these
+    # backends only list models actually in memory).
+    if not rich_ok:
+        try:
+            r = httpx.get(f"{api_base}/v1/models", timeout=2.0)
+            if r.status_code == 200:
+                parsed["server_up"] = True
+                data = r.json().get("data", []) or []
+                for m in data:
+                    mid = str(m.get("id", ""))
+                    if not mid:
+                        continue
+                    parsed["available"].append(mid)
+                    parsed["loaded"].append({
+                        "id":      mid,
+                        "status":  "IDLE",
+                        "size_mb": 0.0,
+                        "context": "",
+                        "ttl":     None,
+                        "device":  "",
+                        "quantization": "",
+                    })
+        except (httpx.HTTPError, OSError):
+            pass
 
     _LMS_API_CACHE = (now, parsed)
     return parsed
@@ -391,9 +424,43 @@ def _index_status(settings: Settings) -> dict[str, Any]:
         except sqlite3.Error:
             pass
 
+    # Phase 60-A2: surface dense (chroma) vector count alongside the FTS
+    # chunk count. During a reindex these diverge — chunker fills FTS fast,
+    # embedder catches up later — and the divergence IS the user-visible
+    # reindex-progress signal. `vectors / chunks` is the % done.
+    vector_count: int | None = None
+    try:
+        # Read the chroma sqlite directly. Cheap (a single COUNT) and avoids
+        # spinning up the chromadb client (which probes the embedder).
+        import sqlite3
+        chroma_db = settings.paths.data_dir / "chroma" / "chroma.sqlite3"
+        if chroma_db.exists():
+            conn = sqlite3.connect(chroma_db, isolation_level=None)
+            conn.execute("PRAGMA query_only = 1")
+            # Find the active collection sqlite table. Chroma stores per-
+            # collection vector counts in `embeddings` keyed by collection_id;
+            # the simplest cross-version count is just total rows in
+            # `embeddings` for the matching collection segment, but for a
+            # quick "is the index growing?" status the total count across
+            # all collections is fine.
+            row = conn.execute(
+                "SELECT COUNT(*) FROM embeddings"
+            ).fetchone()
+            vector_count = int(row[0]) if row else 0
+            conn.close()
+    except (OSError, sqlite3.Error):
+        pass
+
+    # Reindex-in-progress detection: vectors lag chunks by more than 1%.
+    reindex_pct: float | None = None
+    if chunk_count and vector_count is not None and chunk_count > 0:
+        reindex_pct = round(100.0 * vector_count / chunk_count, 1)
+
     return {
         "present":         True,
         "chunks":          chunk_count,
+        "vectors":         vector_count,        # Phase 60-A2
+        "reindex_pct":     reindex_pct,         # Phase 60-A2: vectors/chunks
         "embedder_kind":   meta.get("embedder_kind"),
         "embedder_model":  meta.get("embedder_model"),
         "embedder_dim":    meta.get("embedder_dim"),
@@ -671,12 +738,113 @@ def stop_all(
         duration_ms=0.0,
     ))
     res.add(stop_watcher_task())
+    # Phase 60-A4: also kill any in-flight `code_rag index` bulk reindexer.
+    # Pre-Phase-60 the Stop button left these running because they weren't
+    # classified by proc_hygiene. From the user's POV the stack appeared
+    # stopped while a 4-hour reindex kept hammering the GPU.
+    res.add(_kill_indexer_processes())
     if kill_mcp_servers:
         res.add(_kill_mcp_servers())
+    # Phase 60-A4: stop the WSL vLLM servers (embed on :8000, rerank on :8001)
+    # since those replaced LM Studio as the embedder. Without this, Stop All
+    # left vLLM holding ~14 GB VRAM and serving requests indefinitely.
+    res.add(_kill_vllm_in_wsl())
     res.add(unload_all_models())
     if stop_lm_studio:
         res.add(stop_lms_server())
     return res
+
+
+def _kill_indexer_processes() -> StepResult:
+    """Phase 60-A4: kill every running `code_rag index` (bulk one-shot).
+
+    The watcher (auto-incremental) is handled by stop_watcher_task; the MCP
+    servers by _kill_mcp_servers. This helper covers the third type — the
+    operator-launched bulk reindex. Without this, Stop All would leave a
+    multi-hour `code_rag index` chewing through the codebase.
+    """
+    t0 = time.monotonic()
+    try:
+        from code_rag.util.proc_hygiene import kill_pid, list_code_rag_processes
+    except Exception as e:  # pragma: no cover — defensive
+        return StepResult(
+            "kill_indexer", False, f"helper import failed: {e}",
+            (time.monotonic() - t0) * 1000,
+        )
+    procs = [p for p in list_code_rag_processes() if p.kind == "index"]
+    if not procs:
+        return StepResult(
+            "kill_indexer", True, "no indexer running",
+            (time.monotonic() - t0) * 1000,
+        )
+    killed = 0
+    for p in procs:
+        try:
+            # Phase 60-A4 audit fix: kill_pid takes only `pid`, no timeout_s
+            # kwarg. Original draft had `kill_pid(p.pid, timeout_s=5.0)` which
+            # raised TypeError (caught silently below) and never actually
+            # killed anything — the very bug Phase 60-A4 was meant to fix.
+            if kill_pid(p.pid):
+                killed += 1
+        except Exception:
+            pass
+    return StepResult(
+        "kill_indexer", killed > 0,
+        f"killed {killed}/{len(procs)} indexer process(es)",
+        (time.monotonic() - t0) * 1000,
+    )
+
+
+def _kill_vllm_in_wsl() -> StepResult:
+    """Phase 60-A4: stop vLLM servers running inside WSL.
+
+    Phase 60 swapped the embedder from LM Studio (port 1234) to vLLM running
+    inside Ubuntu WSL on port 8000 (embed) and 8001 (rerank). The classic
+    `stop_lms_server` only knew how to stop LM Studio on Windows. Without
+    this helper, Stop All left ~14 GB of VRAM resident in WSL even after
+    "stopping" the stack.
+
+    Uses `wsl.exe -d Ubuntu -e bash -c 'pkill -f ...'` which is best-effort:
+    if WSL itself is down or vLLM isn't running, returns OK with a "nothing
+    to stop" detail.
+    """
+    t0 = time.monotonic()
+    try:
+        # pkill -f matches against the full command line — `vllm serve` is
+        # distinctive enough that we won't accidentally kill other Python
+        # processes. SIGTERM first, then SIGKILL on stragglers.
+        cmd = [
+            "wsl.exe", "-d", "Ubuntu", "-e", "bash", "-c",
+            "pkill -TERM -f 'vllm serve' 2>/dev/null; sleep 1; "
+            "pkill -KILL -f 'vllm serve' 2>/dev/null; "
+            "echo done",
+        ]
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=15.0,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+        ms = (time.monotonic() - t0) * 1000
+        if proc.returncode == 0:
+            return StepResult(
+                "kill_vllm_wsl", True, "vLLM servers in WSL stopped (or were already stopped)",
+                ms,
+            )
+        return StepResult(
+            "kill_vllm_wsl", False,
+            f"wsl pkill returned rc={proc.returncode}: {(proc.stderr or '')[:200]}",
+            ms,
+        )
+    except subprocess.TimeoutExpired:
+        return StepResult(
+            "kill_vllm_wsl", False,
+            "wsl pkill timed out (WSL may be hung; try Restart-Service LxssManager)",
+            (time.monotonic() - t0) * 1000,
+        )
+    except Exception as e:  # pragma: no cover — defensive
+        return StepResult(
+            "kill_vllm_wsl", False, f"unexpected error: {e}",
+            (time.monotonic() - t0) * 1000,
+        )
 
 
 def _kill_mcp_servers() -> StepResult:

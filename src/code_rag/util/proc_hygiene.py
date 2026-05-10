@@ -235,6 +235,10 @@ _KIND_PATTERNS: tuple[tuple[str, str], ...] = (
     ("dashboard", "code_rag dashboard"),
     ("watcher",   "code_rag.autostart_bootstrap"),
     ("watch_cli", "code_rag watch"),
+    # Phase 60-A4: bulk indexer one-shot. The Stop button needs to kill these
+    # too, otherwise the dashboard's "Stop code-rag" left a long-running
+    # `code_rag index` going while telling the user the stack was down.
+    ("index",     "code_rag index"),
 )
 
 # Parent process names that legitimately host each kind. If the ancestor
@@ -249,6 +253,11 @@ _EXPECTED_PARENTS: dict[str, frozenset[str]] = {
     "watcher":   frozenset({"svchost.exe", "taskeng.exe", "explorer.exe"}),
     "watch_cli": frozenset({"svchost.exe", "taskeng.exe", "explorer.exe",
                             "cmd.exe", "powershell.exe", "pwsh.exe", "bash.exe"}),
+    # Indexer is invoked from a shell (bash via nohup, powershell, cmd, or
+    # directly from claude). We're permissive here because it's a one-shot
+    # operator-launched command, not an autostart pathway.
+    "index":     frozenset({"cmd.exe", "powershell.exe", "pwsh.exe", "bash.exe",
+                            "claude.exe", "claude", "explorer.exe"}),
 }
 
 
@@ -507,6 +516,15 @@ def reap_orphans(*, kill: bool = False) -> dict[str, list[dict[str, object]]]:
     if kill:
         for p in procs:
             if not p.is_orphan:
+                continue
+            # Phase 60-A4 audit fix: NEVER reap kind="index" processes.
+            # The bulk indexer is operator-launched (often via nohup from a
+            # shell that the user closes), so the "ancestor died" signal is
+            # the EXPECTED case, not a leak. Pre-Phase-60 the indexer wasn't
+            # classified at all and was implicitly safe; adding it to
+            # _KIND_PATTERNS made it eligible for reap, which would kill
+            # an in-flight reindex mid-run. Skip-list it explicitly.
+            if p.kind == "index":
                 continue
             if kill_pid(p.pid):
                 killed.append(p.pid)

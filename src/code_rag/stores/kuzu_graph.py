@@ -108,35 +108,135 @@ class KuzuGraphStore(GraphStore):
 
     # ---- writes -------------------------------------------------------------
 
+    # Phase 60-E: batched UNWIND inserts. The previous per-row CREATE pattern
+    # ran ~32 ms per row (Kuzu transaction setup dominates the actual insert
+    # cost on small writes). For files with 400+ symbols/edges that worked out
+    # to 13+ s of writer-lock holding per file. UNWIND-with-batch runs the
+    # whole list in one transaction at ~0.06 ms / row — a 548× speedup measured
+    # on the Phase 60-E microbenchmark.
+    #
+    # Correctness contract preserved: `upsert_symbols` is always preceded by
+    # `delete_by_path(rel)` in the indexer, so all rows are guaranteed-new and
+    # plain batched CREATE is safe. `upsert_edges` may reference cross-file
+    # endpoints that already exist (extern symbols, calls into another file's
+    # symbol), so we pre-query existing IDs and batch-CREATE only the missing
+    # ones before the edge writes.
+
     def upsert_symbols(self, symbols: Sequence[SymbolRef]) -> None:
         if not symbols:
             return
+        rows = [
+            {
+                "id":  self._node_id(s.path, s.symbol),
+                "p":   s.path,
+                "sym": s.symbol,
+                "k":   s.kind,
+                "sl":  s.start_line,
+                "el":  s.end_line,
+            }
+            for s in symbols
+        ]
         with self._lock:
-            for s in symbols:
-                self._merge_symbol(s.path, s.symbol, s.kind, s.start_line, s.end_line)
+            try:
+                self._run(
+                    """UNWIND $rows AS row
+                       CREATE (s:Symbol {
+                         id: row.id, path: row.p, symbol: row.sym,
+                         kind: row.k, start_line: row.sl, end_line: row.el
+                       })""",
+                    {"rows": rows},
+                )
+            except RuntimeError as e:
+                msg = str(e).lower()
+                if "already exists" in msg or "duplicate" in msg or "primary key" in msg:
+                    # Unhappy path: indexer's delete-by-path didn't fully purge
+                    # (concurrent watcher write, lock retry), or a stray prior
+                    # state. Fall back to the original per-row merge that does
+                    # CREATE-or-UPDATE for each. Slow but correct.
+                    log.warning("kuzu.upsert_symbols.batch_collision_fallback",
+                                n=len(symbols), err=str(e)[:200])
+                    for s in symbols:
+                        self._merge_symbol(s.path, s.symbol, s.kind,
+                                           s.start_line, s.end_line)
+                else:
+                    raise
 
     def upsert_edges(self, edges: Sequence[Edge]) -> None:
         if not edges:
             return
+        # Phase 60-E: collect all distinct endpoint IDs that must exist before
+        # we can MATCH-and-CREATE the edges. We then bulk-create only the
+        # IDs that don't already exist, in a single UNWIND. By edge type
+        # (Calls/Contains/Imports) we batch the relationship CREATE separately
+        # because the relationship table name has to be a literal in Cypher.
+        endpoint_rows: dict[str, dict[str, Any]] = {}
+        for e in edges:
+            src_id = self._node_id(e.src_path, e.src_symbol)
+            dst_path = e.dst_path if e.dst_path else self.EXTERN_PATH
+            dst_id = self._node_id(dst_path, e.dst_symbol)
+            if src_id not in endpoint_rows:
+                endpoint_rows[src_id] = {
+                    "id": src_id, "p": e.src_path, "sym": e.src_symbol,
+                    "k": "unknown", "sl": 0, "el": 0,
+                }
+            if dst_id not in endpoint_rows:
+                endpoint_rows[dst_id] = {
+                    "id": dst_id, "p": dst_path, "sym": e.dst_symbol,
+                    "k": "extern" if dst_path == self.EXTERN_PATH else "unknown",
+                    "sl": 0, "el": 0,
+                }
+
         with self._lock:
-            for e in edges:
-                # Resolve dst: if dst_path is None, synthesize an extern node.
-                dst_path = e.dst_path if e.dst_path else self.EXTERN_PATH
-                # Ensure both endpoints exist (MERGE semantics via our helper).
-                self._merge_symbol(e.src_path, e.src_symbol, "unknown", 0, 0, only_if_missing=True)
-                self._merge_symbol(dst_path, e.dst_symbol, "extern" if dst_path == self.EXTERN_PATH
-                                   else "unknown", 0, 0, only_if_missing=True)
-                rel_table = {"calls": "Calls", "contains": "Contains", "imports": "Imports"}.get(
-                    e.kind, "Calls"
+            # Step 1: ensure all endpoint nodes exist. Query existing IDs in
+            # one round-trip, then batch-CREATE the missing ones.
+            if endpoint_rows:
+                ids = list(endpoint_rows.keys())
+                existing_rows = self._run(
+                    "MATCH (s:Symbol) WHERE s.id IN $ids RETURN s.id",
+                    {"ids": ids},
                 )
+                existing = {str(r[0]) for r in existing_rows if r}
+                new_rows = [r for sid, r in endpoint_rows.items() if sid not in existing]
+                if new_rows:
+                    try:
+                        self._run(
+                            """UNWIND $rows AS row
+                               CREATE (s:Symbol {
+                                 id: row.id, path: row.p, symbol: row.sym,
+                                 kind: row.k, start_line: row.sl, end_line: row.el
+                               })""",
+                            {"rows": new_rows},
+                        )
+                    except RuntimeError as e:
+                        msg = str(e).lower()
+                        if "already exists" in msg or "duplicate" in msg or "primary key" in msg:
+                            # Race with a concurrent writer. Retry per-row.
+                            log.warning("kuzu.upsert_edges.endpoint_collision_fallback",
+                                        n=len(new_rows), err=str(e)[:200])
+                            for r in new_rows:
+                                self._merge_symbol(r["p"], r["sym"], r["k"],
+                                                   r["sl"], r["el"],
+                                                   only_if_missing=True)
+                        else:
+                            raise
+
+            # Step 2: group edges by relationship table and batch-CREATE.
+            buckets: dict[str, list[dict[str, Any]]] = {}
+            for e in edges:
+                rel_table = {"calls": "Calls", "contains": "Contains",
+                             "imports": "Imports"}.get(e.kind, "Calls")
+                dst_path = e.dst_path if e.dst_path else self.EXTERN_PATH
+                buckets.setdefault(rel_table, []).append({
+                    "sid": self._node_id(e.src_path, e.src_symbol),
+                    "did": self._node_id(dst_path, e.dst_symbol),
+                    "sp":  e.src_path,
+                })
+            for rel_table, rows in buckets.items():
                 self._run(
-                    f"""MATCH (a:Symbol {{id: $sid}}), (b:Symbol {{id: $did}})
-                        CREATE (a)-[:{rel_table} {{src_path: $sp}}]->(b)""",
-                    {
-                        "sid": self._node_id(e.src_path, e.src_symbol),
-                        "did": self._node_id(dst_path, e.dst_symbol),
-                        "sp":  e.src_path,
-                    },
+                    f"""UNWIND $rows AS row
+                        MATCH (a:Symbol {{id: row.sid}}), (b:Symbol {{id: row.did}})
+                        CREATE (a)-[:{rel_table} {{src_path: row.sp}}]->(b)""",
+                    {"rows": rows},
                 )
 
     def delete_by_path(self, path: str) -> None:

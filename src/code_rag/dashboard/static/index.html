@@ -13,6 +13,9 @@
         <span class="logo-dot"></span>
         <h1>command center</h1>
         <span class="version" id="version">·</span>
+        <!-- Phase 60-A3: live status line so you can see WHY the Start/Stop
+             button shows what it shows. Populated by app.js renderStatus(). -->
+        <span class="topbar-status" id="topbar-status">—</span>
       </div>
       <div class="topbar-actions">
         <!-- Phase 55: this button controls the CODE-RAG stack (LM Studio
@@ -49,6 +52,32 @@
           <div class="kv small"><span>GPU util / temp</span><span id="gpu-util">—</span></div>
         </div>
       </article>
+    </section>
+
+    <!-- Phase 60-A2 + A3: reindex-in-progress indicator. Shown only when
+         dense (chroma) vector count lags FTS chunk count by >1%.
+         Hides itself in steady state. Live rate + ETA computed from a
+         sliding window of poll samples in app.js. -->
+    <section class="reindex" id="reindex" style="display: none;">
+      <header class="card-header">
+        <h2>Reindex in progress</h2>
+        <span class="status-pill" id="reindex-status">—</span>
+      </header>
+      <div class="card-body">
+        <div class="bar"><div class="bar-fill" id="reindex-bar"></div></div>
+        <div class="kv small">
+          <span id="reindex-label">—</span>
+          <span id="reindex-pct">—</span>
+        </div>
+        <div class="kv small">
+          <span id="reindex-rate">—</span>
+          <span id="reindex-eta">—</span>
+        </div>
+        <div class="kv small dim">
+          <span>via</span>
+          <span id="reindex-embedder">—</span>
+        </div>
+      </div>
     </section>
 
     <!-- Phase 52: resource budget at a glance — can each project start

@@ -46,10 +46,32 @@ class GraphIngester:
         finally:
             self._return_store(store)
 
-    def ingest(self, abs_path: Path, rel_path: str, language: str) -> None:
-        symbols, edges = self._extractor.extract(abs_path, rel_path, language)
+    # Phase 60-D split: `ingest()` used to do {parse + extract + DB write} in
+    # one synchronous call. The parse step is CPU-heavy (5-30s on huge
+    # auto-generated files like EF Core migrations) and was historically
+    # held INSIDE the indexer's writer lock — that serialized parsing across
+    # all workers and starved the GPU embedder while one big file was being
+    # parsed. Splitting it lets the indexer run `extract()` in a thread pool
+    # outside the lock, so multiple workers parse in parallel; only the
+    # short DB-write `commit()` stays inside the lock.
+    #
+    # Old `ingest()` is kept as a thin convenience wrapper for the watcher
+    # path, which open-closes Kuzu per event anyway.
+
+    def extract(
+        self, abs_path: Path, rel_path: str, language: str,
+    ) -> tuple[list, list]:
+        """Parse + extract symbols/edges only. NO DB writes — pure CPU work,
+        safe to run outside any writer lock and in `asyncio.to_thread`.
+        Returns (symbols, edges); pass straight into `commit()`."""
+        return self._extractor.extract(abs_path, rel_path, language)
+
+    def commit(self, symbols: list, edges: list) -> None:
+        """Write pre-extracted symbols/edges to the graph store. Fast (DB
+        writes only) — call this INSIDE the indexer's writer lock so writes
+        across stores stay consistent."""
         if not symbols and not edges:
-            # Nothing to write — skip acquiring the lock entirely.
+            # Nothing to write — skip acquiring the store entirely.
             return
         store = self._borrow_store()
         try:
@@ -57,6 +79,14 @@ class GraphIngester:
             store.upsert_edges(edges)
         finally:
             self._return_store(store)
+
+    def ingest(self, abs_path: Path, rel_path: str, language: str) -> None:
+        """Single-call parse-and-commit. Kept for the watcher path (which
+        is single-file-at-a-time and re-opens Kuzu per event so the lock
+        story is moot). New bulk-indexer code should call `extract()` +
+        `commit()` separately so the parse runs outside the writer lock."""
+        symbols, edges = self.extract(abs_path, rel_path, language)
+        self.commit(symbols, edges)
 
     # ---- internals ----------------------------------------------------------
 

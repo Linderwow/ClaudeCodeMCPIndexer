@@ -81,6 +81,11 @@ globs = [
     "**/bin/build_check/**",
     "**/.playwright/**",
     "**/build_check/**",          # generic case (some setups put this elsewhere)
+    # Phase 60: E2E test artifacts. AppointmentCenter.E2E.Tests writes
+    # Playwright page-source dumps (HTML, XML, screenshots) into
+    # bin/run_<name>/ directories. Big, auto-generated, not source code.
+    "**/bin/run_*/**",
+    "**/PageSources/**",          # in case run_* gets refactored
 
     # --- Minified / sourcemap / lockfiles ---
     "**/*.min.js",

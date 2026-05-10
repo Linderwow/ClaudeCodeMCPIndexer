@@ -3,8 +3,11 @@ to run the code-rag stack without OOM.
 
 Phase 47 originally used a simple "> 50% VRAM = refuse" rule. Phase 52
 replaced it with the budget-aware arbitrator (resource_budget.py) which
-knows code-rag's actual cost (~14 GB RAM + ~12 GB VRAM) and refuses
-when (current_used + cost) would exceed (total - reserve).
+knows code-rag's actual cost and refuses when (current_used + cost)
+would exceed (total - reserve). After Phase 60-C centralization the
+cost is ~12 GB RAM + ~11 GB VRAM, but THIS test file pins INTEGRATION
+behavior with hand-built fixtures (not the live PROJECT_COSTS); the
+specific numbers below are independent of the registry.
 
 This file pins the INTEGRATION (the budget verdict feeds into
 start_all and produces a 'budget_guard' step). The Phase 52 tests
@@ -28,7 +31,7 @@ class _StubSettings:
         data_dir = Path("C:/nonexistent_test_dir")
 
     class _Embedder:
-        model = "text-embedding-qwen3-embedding-4b"
+        model = "Qwen3-Embedding-8B-FP8"
 
     class _Reranker:
         kind = "cross_encoder"
@@ -44,13 +47,13 @@ def _verdict_blocked() -> rb.BudgetVerdict:
     without standing up the full nvidia-smi + RAM probe stack."""
     return rb.BudgetVerdict(
         project_id="code-rag", ok=False,
-        cost_ram_gb=14.0, cost_vram_gb=12.0,
+        cost_ram_gb=18.0, cost_vram_gb=18.0,
         available_ram_gb=10.0, available_vram_gb=2.0,
         bottleneck="vram",
         suggestion=(
-            "refuse start: code-rag (full stack) needs 14.0 GB RAM + 12.0 GB "
+            "refuse start: code-rag (full stack) needs 18.0 GB RAM + 18.0 GB "
             "VRAM. only 2.0 GB VRAM available (2.0 GB reserved); "
-            "need to free 10.0 GB."
+            "need to free 16.0 GB."
         ),
     )
 
@@ -59,8 +62,8 @@ def _verdict_ok() -> rb.BudgetVerdict:
     """Sample 'pass' verdict for happy-path integration."""
     return rb.BudgetVerdict(
         project_id="code-rag", ok=True,
-        cost_ram_gb=14.0, cost_vram_gb=12.0,
-        available_ram_gb=40.0, available_vram_gb=18.0,
+        cost_ram_gb=18.0, cost_vram_gb=18.0,
+        available_ram_gb=40.0, available_vram_gb=20.0,
         bottleneck=None,
         suggestion="",
     )

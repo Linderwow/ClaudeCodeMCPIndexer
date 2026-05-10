@@ -121,6 +121,11 @@
       const s = await getJSON('/api/status');
       lastStatus = s;
       renderStatus(s);
+      // Phase 60-A3: reset the Resources pill back to LIVE on success.
+      // Previously a single failed fetch left "UNREACHABLE" on the pill
+      // forever, even after subsequent fetches succeeded.
+      const rs = $('resources-status');
+      if (rs) { rs.textContent = 'live'; rs.className = 'status-pill ok'; }
     } catch (e) {
       // Network blip. /api/status powers the topbar Start/Stop button +
       // the Resources card; degraded but not catastrophic.
@@ -137,13 +142,19 @@
     // the Resources card (RAM/VRAM bars).
 
     // ---- topbar Start all / Stop all ----
+    // Phase 60-A3: previously required watcher.task_state === 'running'
+    // for the topbar to flip to "Stop". That worked in the LM Studio era
+    // when a long-lived watcher process was the heartbeat. In the vLLM
+    // era the embedder server IS the heartbeat — the Windows-scheduled
+    // watcher task spends most of its life in 'Ready' (idle, armed) and
+    // we'd misreport code-rag as "down" whenever it wasn't actively
+    // crawling files. Now we treat code-rag as "up" iff the embedder
+    // server is reachable; the watcher is incidental.
     const lms = s.lm_studio || {};
     const w = s.watcher || {};
     const lmsUp = !!lms.server_up;
     const watcherRunning = (w.task_state || '').toLowerCase() === 'running';
-    // "All" is "up" iff BOTH LM Studio AND the watcher are up. Any partial
-    // state renders as "Start all" so the click normalizes everything to up.
-    const allUp = lmsUp && watcherRunning;
+    const allUp = lmsUp;
     renderToggle('btn-toggle-all', 'all', allUp);
 
     // ---- Resources ----
@@ -169,6 +180,112 @@
       $('gpu-label').textContent = 'GPU info unavailable';
       $('gpu-pct').textContent = '';
       $('gpu-util').textContent = '—';
+    }
+
+    // ---- Phase 60-A2 + A3: reindex-in-progress card ----
+    // Server returns `index.vectors`, `index.chunks`, `index.reindex_pct`
+    // (vectors / chunks * 100). Show the card only when reindex_pct < 99.
+    //
+    // Phase 60-A3: also compute rate + ETA from a sliding window of
+    // previous samples. Without rate the card is a snapshot — you can't
+    // tell if it's stuck or moving. With rate the user gets a useful
+    // "9.2 vec/sec • ~38 min remaining" signal that updates in real time.
+    //
+    // Phase 60 audit fix: declare pct/chunks/vectors at function scope so
+    // the topbar status section below can read them safely. Previously they
+    // were inside `if (reindexEl)` and would ReferenceError if that block
+    // was ever skipped.
+    const idx = s.index || {};
+    const pct = (typeof idx.reindex_pct === 'number') ? idx.reindex_pct : null;
+    const vectors = (typeof idx.vectors === 'number') ? idx.vectors : null;
+    const chunks = (typeof idx.chunks === 'number') ? idx.chunks : null;
+    const reindexEl = $('reindex');
+    if (reindexEl) {
+      // Phase 60 audit fix: also guard `vectors !== null` so we never call
+      // .toLocaleString() on a null/undefined.
+      const inProgress = (chunks && vectors !== null && pct !== null && pct < 99.0);
+      reindexEl.style.display = inProgress ? '' : 'none';
+      if (inProgress) {
+        const bar = $('reindex-bar');
+        bar.style.width = `${pct.toFixed(1)}%`;
+        bar.className = `bar-fill${pct < 50 ? ' err' : pct < 75 ? ' warn' : ''}`;
+        $('reindex-label').textContent =
+          `${vectors.toLocaleString()} / ${chunks.toLocaleString()} vectors`;
+        $('reindex-pct').textContent = `${pct.toFixed(1)}%`;
+        $('reindex-embedder').textContent =
+          `${idx.embedder_model || '—'} (dim ${idx.embedder_dim || '—'})`;
+        const sp = $('reindex-status');
+        sp.textContent = 'catching up';
+        sp.className = 'status-pill warn';
+
+        // Rate / ETA from sliding window. Keep ~last 60 samples (≈ 2 min
+        // at the dashboard's 2 s poll cadence) so the rate doesn't whip
+        // around on per-sample noise.
+        if (typeof window._reindexHist === 'undefined') window._reindexHist = [];
+        const hist = window._reindexHist;
+        const nowMs = Date.now();
+        hist.push({ t: nowMs, v: vectors });
+        while (hist.length > 60) hist.shift();
+        let rateLine = '—';
+        let etaLine = '—';
+        if (hist.length >= 2) {
+          const first = hist[0], last = hist[hist.length - 1];
+          const dv = last.v - first.v;
+          const dt = (last.t - first.t) / 1000;  // seconds
+          if (dt > 5 && dv > 0) {
+            const rate = dv / dt;
+            rateLine = `${rate.toFixed(1)} vec/sec`;
+            const remaining = chunks - vectors;
+            const etaSec = remaining / rate;
+            if (etaSec < 60)        etaLine = `~${Math.ceil(etaSec)}s remaining`;
+            else if (etaSec < 3600) etaLine = `~${Math.ceil(etaSec / 60)} min remaining`;
+            else                    etaLine = `~${(etaSec / 3600).toFixed(1)} h remaining`;
+          } else {
+            // Phase 60 audit fix: stall detection now looks at the LAST 30s
+            // of the window, not the entire (up-to-120s) window. Old code
+            // used dv across the whole window and triggered "stalled" any
+            // time a saturated 120s window had no progress in the last few
+            // seconds — false positives on slow-but-not-stuck reindexes.
+            const recent = hist.filter(h => last.t - h.t <= 30000);
+            if (recent.length >= 2) {
+              const recentDv = recent[recent.length - 1].v - recent[0].v;
+              const recentDt = (recent[recent.length - 1].t - recent[0].t) / 1000;
+              if (recentDt > 25 && recentDv === 0) {
+                rateLine = 'stalled (no progress in 30s)';
+                etaLine = '—';
+              }
+            }
+          }
+        }
+        const rateEl = $('reindex-rate');
+        const etaEl = $('reindex-eta');
+        if (rateEl) rateEl.textContent = rateLine;
+        if (etaEl) etaEl.textContent = etaLine;
+      } else {
+        // Reset history once reindex completes so the next one starts clean.
+        window._reindexHist = [];
+      }
+    }
+
+    // ---- Phase 60-A3: topbar status line ----
+    // Compact, glanceable: "vLLM ✓ • indexer running • dashboard ✓".
+    // Tells the user WHY the Start/Stop button shows what it shows.
+    const statusLine = $('topbar-status');
+    if (statusLine) {
+      const parts = [];
+      const vLabel = lmsUp ? '✓' : '✗';
+      const vClass = lmsUp ? 'ok' : 'err';
+      parts.push(`<span class="ts-${vClass}">vLLM ${vLabel}</span>`);
+      // Reindex / indexer activity — derived from the same heuristic as
+      // the reindex card.
+      if (chunks && pct !== null && pct < 99.0) {
+        parts.push(`<span class="ts-warn">indexer running</span>`);
+      } else if (chunks) {
+        parts.push(`<span class="ts-ok">indexer idle</span>`);
+      }
+      // Dashboard is implicitly up (we wouldn't be rendering otherwise).
+      parts.push(`<span class="ts-ok">dashboard ✓</span>`);
+      statusLine.innerHTML = parts.join(' · ');
     }
   }
 
@@ -403,11 +520,28 @@
   // to free).
   let budgetTimer = null;
 
-  function budgetRow(verdict, current) {
+  function budgetRow(verdict, current, isRunning) {
     const div = document.createElement('div');
-    div.className = 'budget-row ' + (verdict.ok ? 'ok' : 'blocked');
-    const icon = verdict.ok ? '✓' : '✗';
-    const status = verdict.ok ? 'can start' : 'BLOCKED';
+    // Phase 60-A3: a project that's already running shouldn't read as
+    // "BLOCKED" — that's pre-flight language and visually alarming.
+    // When isRunning=true, render as a calm "RUNNING" row regardless
+    // of what the budget arbitrator says (it's gating new starts, not
+    // saying the running project is broken).
+    let cls, icon, status;
+    if (isRunning) {
+      cls = 'running';
+      icon = '●';
+      status = 'RUNNING';
+    } else if (verdict.ok) {
+      cls = 'ok';
+      icon = '✓';
+      status = 'can start';
+    } else {
+      cls = 'blocked';
+      icon = '✗';
+      status = 'BLOCKED';
+    }
+    div.className = 'budget-row ' + cls;
     const cost = `cost: ${verdict.cost_ram_gb} GB RAM · ${verdict.cost_vram_gb} GB VRAM`;
     const avail = `available: ${verdict.available_ram_gb} GB RAM · ${verdict.available_vram_gb} GB VRAM`;
     let html = `
@@ -418,7 +552,9 @@
       </div>
       <div class="budget-meta">${escapeHtml(cost)} · ${escapeHtml(avail)}</div>
     `;
-    if (!verdict.ok && verdict.suggestion) {
+    // Suppress the "refuse start" suggestion when the project is
+    // actually running — it's confusing in that context.
+    if (!isRunning && !verdict.ok && verdict.suggestion) {
       html += `<div class="budget-suggestion">${escapeHtml(verdict.suggestion)}</div>`;
     }
     if (verdict.notes) {
@@ -426,6 +562,19 @@
     }
     div.innerHTML = html;
     return div;
+  }
+
+  // Phase 60-A3: per-project liveness derived from lastStatus.
+  // Currently only code-rag has a probe (the embedder server's reachability);
+  // YouTubeBot + MNQAlpha would need their own (process scan, Task Scheduler
+  // state) to participate. Returns false for unknown projects so they keep
+  // their pre-flight ok/blocked rendering.
+  function projectIsRunning(projectId) {
+    if (!lastStatus) return false;
+    if (projectId === 'code-rag') {
+      return !!(lastStatus.lm_studio && lastStatus.lm_studio.server_up);
+    }
+    return false;
   }
 
   async function refreshBudget() {
@@ -447,15 +596,29 @@
              <span class="dim">(reserve ${reserves.vram_reserve_gb} GB)</span></div>
       `;
       rows.appendChild(summary);
-      for (const v of (data.verdicts || [])) {
-        rows.appendChild(budgetRow(v, cur));
+      // Phase 60-A3: tag each verdict as running/ok/blocked so the
+      // panel header counts only TRUE blocks (not running projects).
+      const verdicts = data.verdicts || [];
+      const tagged = verdicts.map(v => ({
+        verdict: v,
+        running: projectIsRunning(v.project_id),
+      }));
+      for (const t of tagged) {
+        rows.appendChild(budgetRow(t.verdict, cur, t.running));
       }
       if (status) {
-        const blocked = (data.verdicts || []).filter(v => !v.ok).length;
-        const total = (data.verdicts || []).length;
-        if (blocked === 0) {
-          status.textContent = `${total} ready`;
+        const running = tagged.filter(t => t.running).length;
+        const blocked = tagged.filter(t => !t.running && !t.verdict.ok).length;
+        const total = tagged.length;
+        if (blocked === 0 && running === total) {
+          status.textContent = `${total} running`;
           status.className = 'status-pill ok';
+        } else if (blocked === 0) {
+          status.textContent = `${running} running, ${total - running} ready`;
+          status.className = 'status-pill ok';
+        } else if (running > 0) {
+          status.textContent = `${running} running, ${blocked} blocked`;
+          status.className = 'status-pill warn';
         } else {
           status.textContent = `${blocked} of ${total} blocked`;
           status.className = 'status-pill warn';

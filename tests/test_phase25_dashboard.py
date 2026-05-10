@@ -361,17 +361,24 @@ def test_stop_all_default_kills_everything_including_lm_studio(
     seen: list[str] = []
     monkeypatch.setattr(ops, "stop_watcher_task",
                         lambda: seen.append("stop_watcher") or StepResult("a", True))
+    monkeypatch.setattr(ops, "_kill_indexer_processes",
+                        lambda: seen.append("kill_indexer") or StepResult("i", True))
     monkeypatch.setattr(ops, "_kill_mcp_servers",
                         lambda: seen.append("kill_mcp") or StepResult("k", True))
+    monkeypatch.setattr(ops, "_kill_vllm_in_wsl",
+                        lambda: seen.append("kill_vllm_wsl") or StepResult("v", True))
     monkeypatch.setattr(ops, "unload_all_models",
                         lambda: seen.append("unload_all") or StepResult("b", True))
     monkeypatch.setattr(ops, "stop_lms_server",
                         lambda: seen.append("stop_lms") or StepResult("c", True))
     res = ops.stop_all(s)
     assert res.ok
-    # MCP-kill must run BEFORE unload_all so cross-encoders aren't
-    # re-acquiring CUDA buffers right as we yank LM Studio's models.
-    assert seen == ["stop_watcher", "kill_mcp", "unload_all", "stop_lms"]
+    # Phase 60-A4: order is watcher → indexer → MCP → vLLM-in-WSL → unload → stop-lms.
+    # Indexer goes early so its in-flight HTTP requests stop polluting vLLM as
+    # we tear down. vLLM-in-WSL goes after MCP so MCP cross-encoders aren't
+    # mid-rerank when their backend disappears.
+    assert seen == ["stop_watcher", "kill_indexer", "kill_mcp",
+                    "kill_vllm_wsl", "unload_all", "stop_lms"]
 
 
 def test_stop_all_with_stop_lm_studio_false_keeps_server(
@@ -382,15 +389,20 @@ def test_stop_all_with_stop_lm_studio_false_keeps_server(
     seen: list[str] = []
     monkeypatch.setattr(ops, "stop_watcher_task",
                         lambda: seen.append("a") or StepResult("a", True))
+    monkeypatch.setattr(ops, "_kill_indexer_processes",
+                        lambda: seen.append("i") or StepResult("i", True))
     monkeypatch.setattr(ops, "_kill_mcp_servers",
                         lambda: seen.append("k") or StepResult("k", True))
+    monkeypatch.setattr(ops, "_kill_vllm_in_wsl",
+                        lambda: seen.append("v") or StepResult("v", True))
     monkeypatch.setattr(ops, "unload_all_models",
                         lambda: seen.append("b") or StepResult("b", True))
     monkeypatch.setattr(ops, "stop_lms_server",
                         lambda: seen.append("c") or StepResult("c", True))
     res = ops.stop_all(s, stop_lm_studio=False)
     assert res.ok
-    assert seen == ["a", "k", "b"]  # server NOT touched but MCP kill still runs
+    # server NOT touched but indexer + MCP + vLLM-in-WSL kills still run
+    assert seen == ["a", "i", "k", "v", "b"]
 
 
 def test_stop_all_with_kill_mcp_false_preserves_mcp_servers(
@@ -403,9 +415,13 @@ def test_stop_all_with_kill_mcp_false_preserves_mcp_servers(
     seen: list[str] = []
     monkeypatch.setattr(ops, "stop_watcher_task",
                         lambda: seen.append("a") or StepResult("a", True))
+    monkeypatch.setattr(ops, "_kill_indexer_processes",
+                        lambda: seen.append("i") or StepResult("i", True))
     monkeypatch.setattr(ops, "_kill_mcp_servers",
                         lambda: seen.append("KILL_MCP_SHOULD_NOT_RUN") or
                                 StepResult("k", True))
+    monkeypatch.setattr(ops, "_kill_vllm_in_wsl",
+                        lambda: seen.append("v") or StepResult("v", True))
     monkeypatch.setattr(ops, "unload_all_models",
                         lambda: seen.append("b") or StepResult("b", True))
     monkeypatch.setattr(ops, "stop_lms_server",
@@ -413,7 +429,8 @@ def test_stop_all_with_kill_mcp_false_preserves_mcp_servers(
     res = ops.stop_all(s, kill_mcp_servers=False)
     assert res.ok
     assert "KILL_MCP_SHOULD_NOT_RUN" not in seen
-    assert seen == ["a", "b", "c"]
+    # Phase 60-A4: indexer + vLLM-in-WSL still run when MCP is opted-out.
+    assert seen == ["a", "i", "v", "b", "c"]
 
 
 def test_kill_mcp_servers_no_processes_returns_ok(

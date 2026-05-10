@@ -23,6 +23,51 @@ log = get(__name__)
 
 
 @dataclass
+class StageTimes:
+    """Phase 60-E profiling: aggregate per-stage time inside `_process_file`.
+
+    All values are wall-clock seconds, summed across every file processed
+    in the run. Lock-wait is the time consumers blocked on `_store_lock`
+    before entering the writer critical section — high values indicate
+    serialization, not raw store slowness. Together with `chunk_s` /
+    `embed_s` / `graph_extract_s` (which run OUTSIDE the lock) it lets
+    you tell whether the bottleneck is CPU, IO, or serialization.
+    """
+    read_s: float = 0.0
+    chunk_s: float = 0.0
+    embed_s: float = 0.0
+    graph_extract_s: float = 0.0
+    lock_wait_s: float = 0.0
+    vec_delete_s: float = 0.0
+    lex_delete_s: float = 0.0
+    graph_delete_s: float = 0.0
+    vec_upsert_s: float = 0.0
+    lex_upsert_s: float = 0.0
+    graph_commit_s: float = 0.0
+    hash_s: float = 0.0
+    symbols_total: int = 0
+    edges_total: int = 0
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "read_s":          round(self.read_s, 3),
+            "chunk_s":         round(self.chunk_s, 3),
+            "embed_s":         round(self.embed_s, 3),
+            "graph_extract_s": round(self.graph_extract_s, 3),
+            "lock_wait_s":     round(self.lock_wait_s, 3),
+            "vec_delete_s":    round(self.vec_delete_s, 3),
+            "lex_delete_s":    round(self.lex_delete_s, 3),
+            "graph_delete_s":  round(self.graph_delete_s, 3),
+            "vec_upsert_s":    round(self.vec_upsert_s, 3),
+            "lex_upsert_s":    round(self.lex_upsert_s, 3),
+            "graph_commit_s":  round(self.graph_commit_s, 3),
+            "hash_s":          round(self.hash_s, 3),
+            "symbols_total":   self.symbols_total,
+            "edges_total":     self.edges_total,
+        }
+
+
+@dataclass
 class IndexStats:
     files_seen: int = 0
     files_indexed: int = 0
@@ -34,6 +79,10 @@ class IndexStats:
     paths_gc: int = 0  # stale paths reaped because their files vanished
     elapsed_s: float = 0.0
     errors: list[str] = field(default_factory=list)
+    # Phase 60-E: profiling roll-up. Always-on; per-call overhead is a few
+    # perf_counter() calls per file (sub-microsecond). The summary is logged
+    # at info level when the run finishes.
+    stage_times: StageTimes = field(default_factory=StageTimes)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -47,6 +96,7 @@ class IndexStats:
             "paths_gc": self.paths_gc,
             "elapsed_s": round(self.elapsed_s, 3),
             "errors": self.errors[:10],
+            "stage_times": self.stage_times.as_dict(),
         }
 
 
@@ -390,23 +440,27 @@ class Indexer:
         which paths were visited (for the stale-path GC pass)."""
         stats.files_seen += 1
         rel, repo = _rel_and_repo(abs_path, self._settings.all_roots())
+        st = stats.stage_times  # Phase 60-E: per-stage profiling
 
         # Phase 14: hash-skip. If we've indexed this exact content before,
         # the per-chunk pipeline (parse → chunk → embed → upsert) is purely
         # busywork -- same content always produces same chunk_ids and same
         # vectors. Reading the bytes once + a blake3 hash is ~milliseconds;
         # parsing + embedding a single 200-line file is ~seconds. Net win.
+        _t = time.perf_counter()
         try:
             content = abs_path.read_bytes()
         except OSError as e:
             stats.errors.append(f"read:{rel}:{type(e).__name__}:{e}")
             return rel
+        st.read_s += time.perf_counter() - _t
         if self._hashes is not None and self._hashes.is_unchanged(rel, content):
             stats.files_skipped_unchanged += 1
             log.debug("indexer.skip_unchanged", path=rel)
             return rel
 
         # CPU-bound parse goes off the event loop.
+        _t = time.perf_counter()
         try:
             if is_doc:
                 chunks = await asyncio.to_thread(
@@ -419,6 +473,7 @@ class Indexer:
         except Exception as e:
             stats.errors.append(f"chunk:{rel}:{type(e).__name__}:{e}")
             return rel
+        st.chunk_s += time.perf_counter() - _t
 
         # Empty file: purge any stale chunks and return. This is the only case
         # where we delete without a successful embed to replace the chunks.
@@ -461,11 +516,36 @@ class Indexer:
         # Embed FIRST. If the embedder is down, we want the previous chunks to
         # stay searchable rather than deleting them and leaving the file
         # invisible until the embedder comes back.
+        _t = time.perf_counter()
         try:
             vectors = await self._embed.embed([c.text for c in chunks])
         except Exception as e:
             stats.errors.append(f"embed:{rel}:{type(e).__name__}:{e}")
             return rel
+        st.embed_s += time.perf_counter() - _t
+
+        # Phase 60-D: parse the graph data OUTSIDE the writer lock. Previously
+        # `graph.ingest()` (parse + extract + DB write) was held inside the
+        # store lock. The parse step is CPU-heavy (5-30 s on 50K-line auto-
+        # generated files) so a single big file would block every other
+        # worker AND starve the GPU embedder during that window. Splitting
+        # parse from commit lets multiple workers parse in parallel; only
+        # the short DB-write phase serializes through the lock.
+        graph_payload: tuple[list, list] | None = None
+        if self._graph is not None:
+            _t = time.perf_counter()
+            try:
+                graph_payload = await asyncio.to_thread(
+                    self._graph.extract,  # type: ignore[attr-defined]
+                    abs_path, rel, language,
+                )
+            except Exception as e:
+                stats.errors.append(f"graph_parse:{rel}:{e}")
+                # Fall through with graph_payload=None; commit step will skip.
+            st.graph_extract_s += time.perf_counter() - _t
+            if graph_payload is not None:
+                st.symbols_total += len(graph_payload[0])
+                st.edges_total   += len(graph_payload[1])
 
         # Only now do we delete stale chunks (source-of-truth semantics) and
         # insert the fresh ones. All store writes are serialized via the
@@ -476,45 +556,63 @@ class Indexer:
         # the hash registry was stamped unconditionally below, so a partial
         # write left the file silently missing from search forever.
         vec_ok = lex_ok = graph_ok = True
+        _t_lock = time.perf_counter()
         async with self._store_lock:
+            st.lock_wait_s += time.perf_counter() - _t_lock
+            _t = time.perf_counter()
             try:
                 purged = self._vec.delete_by_path(rel)
                 stats.paths_purged += 1 if purged else 0
             except Exception as e:
                 stats.errors.append(f"vec_delete:{rel}:{e}")
                 vec_ok = False
+            st.vec_delete_s += time.perf_counter() - _t
             if self._lex is not None:
+                _t = time.perf_counter()
                 try:
                     self._lex.delete_by_path(rel)  # type: ignore[attr-defined]
                 except Exception as e:
                     stats.errors.append(f"lex_delete:{rel}:{e}")
                     lex_ok = False
+                st.lex_delete_s += time.perf_counter() - _t
             if self._graph is not None:
+                _t = time.perf_counter()
                 try:
                     self._graph.delete_by_path(rel)  # type: ignore[attr-defined]
                 except Exception as e:
                     stats.errors.append(f"graph_delete:{rel}:{e}")
                     graph_ok = False
+                st.graph_delete_s += time.perf_counter() - _t
 
+            _t = time.perf_counter()
             try:
                 self._vec.upsert(chunks, vectors)
             except Exception as e:
                 stats.errors.append(f"vec_upsert:{rel}:{e}")
                 vec_ok = False
+            st.vec_upsert_s += time.perf_counter() - _t
             if self._lex is not None:
+                _t = time.perf_counter()
                 try:
                     self._lex.upsert(chunks)  # type: ignore[attr-defined]
                 except Exception as e:
                     stats.errors.append(f"lex_upsert:{rel}:{e}")
                     lex_ok = False
-            if self._graph is not None:
+                st.lex_upsert_s += time.perf_counter() - _t
+            if self._graph is not None and graph_payload is not None:
+                _t = time.perf_counter()
                 try:
-                    # Graph ingester reparses the file to get call-site edges
-                    # that the chunker intentionally drops.
-                    self._graph.ingest(abs_path, rel, language)  # type: ignore[attr-defined]
+                    # Phase 60-D: just commit the pre-extracted symbols/edges
+                    # — fast DB-only writes inside the lock.
+                    self._graph.commit(*graph_payload)  # type: ignore[attr-defined]
                 except Exception as e:
                     stats.errors.append(f"graph_upsert:{rel}:{e}")
                     graph_ok = False
+                st.graph_commit_s += time.perf_counter() - _t
+            elif self._graph is not None and graph_payload is None:
+                # Parse failed earlier; mark the file as graph-incomplete so
+                # the hash isn't stamped (next pass will retry).
+                graph_ok = False
 
         # Stamp the content hash ONLY when every store accepted the write.
         # Otherwise leave the hash unchanged so the next pass retries — that
@@ -523,10 +621,12 @@ class Indexer:
         # would have hit `is_unchanged → skip` if we'd stamped the hash).
         all_ok = vec_ok and lex_ok and graph_ok
         if all_ok and self._hashes is not None:
+            _t = time.perf_counter()
             try:
                 self._hashes.upsert(rel, content)
             except Exception as e:
                 stats.errors.append(f"hash_upsert:{rel}:{e}")
+            st.hash_s += time.perf_counter() - _t
 
         if all_ok:
             stats.files_indexed += 1

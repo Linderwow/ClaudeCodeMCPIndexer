@@ -1,8 +1,9 @@
 """Phase 52: resource arbitrator tests.
 
-The 22.5 GB VRAM 4090 isn't big enough to run code-rag (~12 GB) +
-YouTubeBot with ComfyUI (~14 GB) + COD simultaneously. Before any
-project starts we need to refuse if there isn't enough headroom.
+The 22.5 GB VRAM 4090 isn't big enough to run code-rag (~11 GB after
+Phase 60-C centralization) + YouTubeBot with ComfyUI (~14 GB) + COD
+simultaneously without careful budgeting. Before any project starts
+we need to refuse if there isn't enough headroom.
 
 These tests pin:
   - the cost registry has all three projects (catches accidental
@@ -77,8 +78,9 @@ def test_can_start_when_resources_are_idle() -> None:
 
 
 def test_refuse_code_rag_when_comfyui_is_holding_vram() -> None:
-    """ComfyUI scenario: 18 GB VRAM used. code-rag needs 12 GB more →
-    only 22.5 - 2 reserve - 18 = 2.5 GB available → refuse."""
+    """ComfyUI scenario: 18 GB VRAM used. code-rag needs 18 GB more →
+    only 22.5 - 2 reserve - 18 = 2.5 GB available → refuse. RAM is
+    fine here (64-4-20=40 avail vs 18 needed) so bottleneck is vram."""
     cur = CurrentResources(
         ram_used_gb=20.0, ram_total_gb=64.0,
         vram_used_gb=18.0, vram_total_gb=22.5,
@@ -111,9 +113,11 @@ def test_suggestion_says_how_much_to_free() -> None:
     )
     v = can_start_project("code-rag", cur)
     assert v.ok is False
-    # vram cost 12 - available (22.5 - 2 - 18 = 2.5) = 9.5 GB short
+    # vram cost 11 - available (22.5 - 2 - 18 = 2.5) = 8.5 GB short
+    # (Phase 60-C: cost dropped 18 → 11 GB after rerank centralization
+    # + vLLM mem-util tightening; the assertion follows the cost.)
     assert "free" in v.suggestion.lower()
-    assert "9.5 GB" in v.suggestion or "9.4 GB" in v.suggestion or "9.6 GB" in v.suggestion
+    assert "8.5 GB" in v.suggestion or "8.4 GB" in v.suggestion or "8.6 GB" in v.suggestion
 
 
 # ---- RAM exhaustion ------------------------------------------------------
@@ -125,7 +129,7 @@ def test_refuse_when_only_ram_is_short() -> None:
         ram_used_gb=58.0, ram_total_gb=64.0,    # only 2 GB free after reserve
         vram_used_gb=0.0, vram_total_gb=22.5,
     )
-    v = can_start_project("code-rag", cur)   # needs 14 GB RAM
+    v = can_start_project("code-rag", cur)   # needs 12 GB RAM (Phase 60-C)
     assert v.ok is False
     assert v.bottleneck == "ram"
     assert "RAM" in v.suggestion

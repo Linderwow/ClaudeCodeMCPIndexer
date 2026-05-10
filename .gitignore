@@ -36,3 +36,6 @@ eval-out.txt
 eval-err.txt
 eval-result.txt
 eval-help.txt
+
+# Phase 60-E: profiling output dir from scripts/profile_indexer.py
+data_profile/

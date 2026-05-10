@@ -111,7 +111,12 @@ def test_lock_does_not_delete_when_not_acquired(tmp_path: Path) -> None:
     ('"...pythonw.exe" -m code_rag dashboard --no-browser --port 7321', "dashboard"),
     ('"...pythonw.exe" -m code_rag.autostart_bootstrap', "watcher"),
     ('"...pythonw.exe" -m code_rag watch', "watch_cli"),
-    ('"...pythonw.exe" -m code_rag index --path foo', None),  # not orphan-tracked
+    # Phase 60-A4: indexer IS now classified (so Stop All can find it),
+    # but reap_orphans skip-lists it so an orphan-classification doesn't
+    # kill an in-flight bulk reindex. Test that the classifier returns
+    # "index"; reap-skip behavior is covered by integration tests of
+    # reap_orphans + a synthetic orphaned indexer.
+    ('"...pythonw.exe" -m code_rag index --path foo', "index"),
     ('"...pythonw.exe" -c "print(1)"', None),
 ])
 def test_classify_kind(cmdline: str, expected_kind: str | None) -> None:
