@@ -1,18 +1,33 @@
-# Phase 60: scheduled resume of the code-rag stack.
+# Phase 60-H: the canonical "bring up the code-rag vLLM stack" script.
 #
-# Replaces the old "let LM Studio autostart bring it up" flow. With Phase 60
-# the embedder runs as vLLM inside WSL Ubuntu (port 8000 = embed,
-# port 8001 = rerank). This script:
-#   1. Launches both vLLM servers via setsid+nohup so they survive the
-#      schtasks shell exiting.
-#   2. Waits up to 3 min for /v1/models on both ports to respond.
-#   3. Restarts the bulk indexer to resume any reindex from file_hashes.db.
-#   4. Logs everything to ~/Documents/code-rag-mcp/logs/resume_TIMESTAMP.log
+# Three legitimate callers:
+#   1. autostart_bootstrap.py (logon path) — when the `code-rag-watch`
+#      scheduled task fires on Windows logon, the bootstrap probes vLLM
+#      and invokes this script if vLLM is down (and `data/.stopped` is
+#      not present). This is the primary autonomy hook.
+#   2. The dashboard's `/api/start/all` endpoint — when the user clicks
+#      Start in the Command Center. Phase 60-G's `_start_vllm_in_wsl`
+#      mirrors this script's launch logic.
+#   3. Manual invocation:
+#        powershell.exe -NoProfile -ExecutionPolicy Bypass -File <this-script>
 #
-# Usage (from anywhere):
-#   powershell.exe -NoProfile -ExecutionPolicy Bypass -File <this-script>
+# What it does:
+#   1. Probes /v1/models on :8000 + :8001. If both are 200, skips launch
+#      (idempotent — re-fires from any caller are no-ops).
+#   2. Otherwise: launches missing vLLM servers SEQUENTIALLY (embed first,
+#      wait for /v1/models 200, then rerank) to avoid VRAM-contention
+#      crashes during simultaneous CUDA graph capture.
+#   3. Each launch uses setsid+nohup+disown+sleep to fully detach from
+#      the launching shell (a Phase 60-G2 audit fix — without `disown +
+#      sleep`, PS-mediated wsl.exe tears down the foreground bash
+#      session before the background process can re-parent).
+#   4. Restarts the bulk indexer (resumes from file_hashes.db).
+#   5. Logs everything to logs/resume_<timestamp>.log.
 #
-# Wired up by `schtasks /create /sc once /st 21:00 ...` for the 9 PM resume.
+# Phase 60-H: the standalone daily scheduled task (`code-rag-resume-10pm`)
+# is no longer needed and has been deleted. The logon-driven autonomy
+# path covers the "always-up" case; the dashboard Stop/Start covers the
+# "I'm gaming, free VRAM" case.
 
 $ErrorActionPreference = 'Continue'
 $ts = Get-Date -Format 'yyyyMMdd_HHmmss'

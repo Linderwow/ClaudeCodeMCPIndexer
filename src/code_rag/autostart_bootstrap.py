@@ -120,12 +120,18 @@ async def _run() -> int:
 
     # 2) Ensure the embedder server is up.
     #
-    # Phase 60: skip the LM Studio bring-up path entirely when the configured
-    # embedder is vLLM (port 8000). vLLM is launched by a separate scheduled
-    # task (`code-rag-resume-10pm`) that runs `scripts/resume_code_rag.ps1`
-    # — invoking ensure_lm_studio_ready() against vLLM's URL just produces
-    # log noise from `lms server start` failures, since LM Studio isn't
-    # installed and even if it were, it can't load a vLLM-served model.
+    # Phase 60-H (Pattern B autonomy): the bootstrap is the canonical
+    # entry-point for "code-rag should be alive". On Windows logon, the
+    # `code-rag-watch` scheduled task fires this — so this is the right
+    # place to (re)launch vLLM if it's down, instead of relying on a
+    # separate daily timed task.
+    #
+    # Stop-marker-aware: if `data/.stopped` is present (set by the
+    # dashboard's Stop button), we DO NOT launch vLLM. The user said
+    # "stay stopped" — respect that across logon. Earlier in this same
+    # bootstrap function we already check the stop marker and bail out
+    # before reaching this point, so getting here means the user wants
+    # the stack up.
     from urllib.parse import urlparse
     base_url = settings.embedder.base_url
     try:
@@ -134,18 +140,49 @@ async def _run() -> int:
         is_vllm = False
 
     if is_vllm:
-        # Just probe — don't try to start anything. The watcher can run
-        # whether vLLM is up or not (events will retry).
         try:
             from code_rag.lms_ctl import server_is_up
             up = server_is_up(base_url, timeout_s=2.0)
         except Exception:
             up = False
-        _plain_log(
-            autostart_log,
-            f"vllm probe: {'up' if up else 'down'} at {base_url} "
-            "(launched separately via scripts/resume_code_rag.ps1)"
-        )
+
+        if up:
+            _plain_log(autostart_log, f"vllm probe: up at {base_url}")
+        else:
+            _plain_log(
+                autostart_log,
+                f"vllm probe: down at {base_url} — invoking resume script"
+            )
+            # Invoke the same idempotent script the manual "Start" button uses.
+            # Spawn detached so a slow vLLM cold-start (~30 s) doesn't block
+            # the bootstrap from getting on with the watcher.
+            import subprocess as _sp
+            ps_script = (
+                Path(__file__).parent.parent.parent
+                / "scripts" / "resume_code_rag.ps1"
+            )
+            if ps_script.exists():
+                try:
+                    _sp.Popen(
+                        ["powershell.exe", "-NoProfile", "-ExecutionPolicy",
+                         "Bypass", "-File", str(ps_script)],
+                        stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+                        stdin=_sp.DEVNULL, close_fds=True,
+                        creationflags=0x08000000,  # CREATE_NO_WINDOW
+                    )
+                    _plain_log(
+                        autostart_log,
+                        f"  spawned {ps_script.name} (detached); vLLM coming up"
+                    )
+                except OSError as e:
+                    _plain_log(autostart_log,
+                               f"  FAILED to spawn resume script: {e}")
+            else:
+                _plain_log(
+                    autostart_log,
+                    f"  WARN: resume script missing at {ps_script} "
+                    "— vLLM stays down until manual Start"
+                )
     else:
         # Legacy LM Studio path (kind="lm_studio" pointing at :1234, etc.).
         # Pre-load any auxiliary chat/rerank models so the first MCP query
