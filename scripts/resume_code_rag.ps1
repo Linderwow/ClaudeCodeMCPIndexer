@@ -29,6 +29,33 @@ function Log($msg) {
 Log "=== Phase 60 resume start ==="
 Log "log: $log"
 
+# ----- 0. Idempotency probe --------------------------------------------------
+# Audit fix: each retrigger of this task previously left zombie EngineCore
+# workers behind because the new `vllm serve` parent crashed on port-bind
+# but its forked worker survived holding ~10 GB VRAM. Probe before launch:
+# if both /v1/models endpoints already 200, skip the launch entirely. The
+# script then just ensures the indexer is running and exits.
+function PortAlreadyUp($port) {
+    try {
+        $r = Invoke-WebRequest -Uri "http://localhost:$port/v1/models" -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
+        return $r.StatusCode -eq 200
+    } catch { return $false }
+}
+
+$embedAlreadyUp = PortAlreadyUp 8000
+$rerankAlreadyUp = PortAlreadyUp 8001
+
+if ($embedAlreadyUp -and $rerankAlreadyUp) {
+    Log "vLLM-embed AND vLLM-rerank already up; skipping launch (idempotent path)."
+    Log "VRAM: $(& wsl.exe -d Ubuntu -e bash -c 'nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader')"
+    # Skip ahead to the indexer step.
+    $skipLaunch = $true
+} else {
+    $skipLaunch = $false
+    if ($embedAlreadyUp) { Log "  vLLM-embed already up (port 8000)" }
+    if ($rerankAlreadyUp) { Log "  vLLM-rerank already up (port 8001)" }
+}
+
 # ----- 1. Launch vLLM-embed inside WSL ---------------------------------------
 # Audit fix: after each wsl.exe call, poll for the log file's existence
 # inside WSL. If wsl.exe bounces (Task Scheduler context can return without
@@ -55,12 +82,16 @@ function LaunchAndConfirm($script_name, $log_path_in_wsl) {
     return $false
 }
 
-Log "launching vLLM-embed (port 8000)..."
-if (LaunchAndConfirm 'serve-qwen3-embed-8b.sh' '/tmp/vllm-embed.log') {
-    Log "  embed launched (log file present in WSL)"
+if ($skipLaunch -or $embedAlreadyUp) {
+    Log "skipping vLLM-embed launch (already up)"
 } else {
-    Log "FATAL: wsl.exe didn't dispatch vLLM-embed launch -- log file never created. Bailing."
-    exit 2
+    Log "launching vLLM-embed (port 8000)..."
+    if (LaunchAndConfirm 'serve-qwen3-embed-8b.sh' '/tmp/vllm-embed.log') {
+        Log "  embed launched (log file present in WSL)"
+    } else {
+        Log "FATAL: wsl.exe didn't dispatch vLLM-embed launch -- log file never created. Bailing."
+        exit 2
+    }
 }
 
 # Audit fix: SEQUENTIAL launch. Original draft launched embed + rerank in
@@ -72,25 +103,29 @@ if (LaunchAndConfirm 'serve-qwen3-embed-8b.sh' '/tmp/vllm-embed.log') {
 # starts loading once embed has settled into its steady-state VRAM
 # footprint, which is what the per-server mem-util calculation actually
 # expects.
-Log "waiting for vLLM-embed to settle BEFORE launching rerank (avoid VRAM-contention crash)..."
-$earlyEmbedUp = $false
-for ($k = 0; $k -lt 36; $k++) {
-    try {
-        $r = Invoke-WebRequest -Uri "http://localhost:8000/v1/models" -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
-        if ($r.StatusCode -eq 200) { $earlyEmbedUp = $true; Log "  embed settled after $($k*5)s, launching rerank now"; break }
-    } catch { }
-    Start-Sleep -Seconds 5
-}
-if (-not $earlyEmbedUp) {
-    Log "WARN: embed not up after 180s during pre-rerank wait; launching rerank anyway"
-}
+if (-not $skipLaunch -and -not $rerankAlreadyUp) {
+    Log "waiting for vLLM-embed to settle BEFORE launching rerank (avoid VRAM-contention crash)..."
+    $earlyEmbedUp = $false
+    for ($k = 0; $k -lt 36; $k++) {
+        try {
+            $r = Invoke-WebRequest -Uri "http://localhost:8000/v1/models" -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
+            if ($r.StatusCode -eq 200) { $earlyEmbedUp = $true; Log "  embed settled after $($k*5)s, launching rerank now"; break }
+        } catch { }
+        Start-Sleep -Seconds 5
+    }
+    if (-not $earlyEmbedUp) {
+        Log "WARN: embed not up after 180s during pre-rerank wait; launching rerank anyway"
+    }
 
-# ----- 2. Launch vLLM-rerank inside WSL --------------------------------------
-Log "launching vLLM-rerank (port 8001)..."
-if (LaunchAndConfirm 'serve-rerank-bge-m3.sh' '/tmp/vllm-rerank.log') {
-    Log "  rerank launched (log file present in WSL)"
+    # ----- 2. Launch vLLM-rerank inside WSL ----------------------------------
+    Log "launching vLLM-rerank (port 8001)..."
+    if (LaunchAndConfirm 'serve-rerank-bge-m3.sh' '/tmp/vllm-rerank.log') {
+        Log "  rerank launched (log file present in WSL)"
+    } else {
+        Log "WARN: rerank launch undetectable in 10s; continuing (rerank is best-effort)"
+    }
 } else {
-    Log "WARN: rerank launch undetectable in 10s; continuing (rerank is best-effort)"
+    Log "skipping vLLM-rerank launch (already up or skipping all launches)"
 }
 
 # ----- 3. Poll until both endpoints respond (max 180 s each) -----------------
