@@ -77,7 +77,18 @@ if ($embedAlreadyUp -and $rerankAlreadyUp) {
 # actually dispatching the WSL job), the bash redirect never fires and the
 # log is missing. Detecting this in 10s saves us from the 180s /v1/models
 # timeout downstream.
-function LaunchAndConfirm($script_name, $log_path_in_wsl) {
+function LaunchAndConfirm($script_name, $log_path_in_wsl, $served_model_name) {
+    # Phase 60-M (round-5): pkill any prior instance of THIS specific serve
+    # before spawning a new one. Without this, repeated runs of
+    # resume_code_rag.ps1 (or one manual run + one autostart-driven run that
+    # races the idempotency probe) accumulate parallel vllm processes —
+    # Linux SO_REUSEPORT lets two `vllm serve --port 8000` peacefully share
+    # the same port, but each holds its own model weights in VRAM. We
+    # observed 4× EngineCores ≈ 22 GB / 22.5 GB peak. Match on
+    # --served-model-name (passed by every serve script) so we kill ONLY
+    # the relevant duplicate, not any other user vllm jobs.
+    & wsl.exe -d Ubuntu -e bash -c "pkill -f 'served-model-name $served_model_name' 2>/dev/null; pkill -f '$script_name' 2>/dev/null; sleep 1; true"
+
     # Audit-2 round-3 fix: when wsl.exe is invoked from PowerShell (Task
     # Scheduler context), wsl.exe tears down the foreground bash session
     # as soon as the bash exits — and the backgrounded `setsid nohup ... &`
@@ -101,7 +112,7 @@ if ($skipLaunch -or $embedAlreadyUp) {
     Log "skipping vLLM-embed launch (already up)"
 } else {
     Log "launching vLLM-embed (port 8000)..."
-    if (LaunchAndConfirm 'serve-qwen3-embed-8b.sh' '/tmp/vllm-embed.log') {
+    if (LaunchAndConfirm 'serve-qwen3-embed-8b.sh' '/tmp/vllm-embed.log' 'Qwen3-Embedding-8B-FP8') {
         Log "  embed launched (log file present in WSL)"
     } else {
         Log "FATAL: wsl.exe didn't dispatch vLLM-embed launch -- log file never created. Bailing."
@@ -134,7 +145,7 @@ if (-not $skipLaunch -and -not $rerankAlreadyUp) {
 
     # ----- 2. Launch vLLM-rerank inside WSL ----------------------------------
     Log "launching vLLM-rerank (port 8001)..."
-    if (LaunchAndConfirm 'serve-rerank-bge-m3.sh' '/tmp/vllm-rerank.log') {
+    if (LaunchAndConfirm 'serve-rerank-bge-m3.sh' '/tmp/vllm-rerank.log' 'bge-reranker-v2-m3') {
         Log "  rerank launched (log file present in WSL)"
     } else {
         Log "WARN: rerank launch undetectable in 10s; continuing (rerank is best-effort)"
