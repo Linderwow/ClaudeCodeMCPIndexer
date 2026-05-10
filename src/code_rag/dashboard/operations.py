@@ -617,10 +617,17 @@ def _start_vllm_in_wsl(settings: Settings) -> StepResult:
     def _launch(script_name: str) -> None:
         # setsid + nohup + redirected fds so the server outlives the parent
         # WSL bash session. </dev/null prevents stdin EOF kills.
+        # Audit-2 round-3 fix: append `disown; sleep 3` so the foreground
+        # bash stays alive long enough for the backgrounded process to
+        # actually detach. Without this, when invoked from PowerShell-
+        # mediated wsl.exe (Task Scheduler context), the launched process
+        # gets killed before it opens the redirect target — the launch
+        # silently no-ops and downstream waits hit their full 180s timeout.
         cmd = [
             "wsl.exe", "-d", "Ubuntu", "-e", "bash", "-c",
+            f"rm -f /tmp/{script_name}.log; "
             f"setsid nohup bash $HOME/bin/{script_name} "
-            f"> /tmp/{script_name}.log 2>&1 < /dev/null &",
+            f"> /tmp/{script_name}.log 2>&1 < /dev/null & disown; sleep 3",
         ]
         subprocess.Popen(
             cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -924,11 +931,22 @@ def _kill_vllm_in_wsl() -> StepResult:
         # GB VRAM. `EngineCore` matches them by their renamed argv[0].
         cmd = [
             "wsl.exe", "-d", "Ubuntu", "-e", "bash", "-c",
+            # vLLM forks several distinctly-named workers. Reap all of them
+            # so VRAM is fully freed:
+            #   - 'vllm serve'  : the API server parent
+            #   - 'EngineCore'  : the renamed CUDA worker (holds the model)
+            #   - 'multiprocessing.resource_tracker' : leftover from vLLM
+            #     mp pool, can survive even after EngineCore dies
+            #   - 'multiprocessing.spawn'            : same family
             "pkill -TERM -f 'vllm serve' 2>/dev/null; "
             "pkill -TERM -f 'EngineCore' 2>/dev/null; "
+            "pkill -TERM -f 'multiprocessing.resource_tracker' 2>/dev/null; "
+            "pkill -TERM -f 'multiprocessing.spawn' 2>/dev/null; "
             "sleep 1; "
             "pkill -KILL -f 'vllm serve' 2>/dev/null; "
             "pkill -KILL -f 'EngineCore' 2>/dev/null; "
+            "pkill -KILL -f 'multiprocessing.resource_tracker' 2>/dev/null; "
+            "pkill -KILL -f 'multiprocessing.spawn' 2>/dev/null; "
             "echo done",
         ]
         proc = subprocess.run(

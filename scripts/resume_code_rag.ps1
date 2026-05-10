@@ -36,7 +36,17 @@ Log "log: $log"
 # log is missing. Detecting this in 10s saves us from the 180s /v1/models
 # timeout downstream.
 function LaunchAndConfirm($script_name, $log_path_in_wsl) {
-    & wsl.exe -d Ubuntu -e bash -c "rm -f $log_path_in_wsl; setsid nohup bash `$HOME/bin/$script_name > $log_path_in_wsl 2>&1 < /dev/null &"
+    # Audit-2 round-3 fix: when wsl.exe is invoked from PowerShell (Task
+    # Scheduler context), wsl.exe tears down the foreground bash session
+    # as soon as the bash exits — and the backgrounded `setsid nohup ... &`
+    # process gets killed before it can fully detach. Empirically the
+    # working pattern is `& disown ; sleep 3` (or longer): disown removes
+    # the job from bash's table so SIGHUP doesn't propagate, and the sleep
+    # keeps the WSL session alive long enough for the launched process
+    # to settle into its own session. Without these two, the launch fires
+    # but the redirect target file never gets created (the launched bash
+    # is killed before it opens the file).
+    & wsl.exe -d Ubuntu -e bash -c "rm -f $log_path_in_wsl; setsid nohup bash `$HOME/bin/$script_name > $log_path_in_wsl 2>&1 < /dev/null & disown; sleep 3"
     for ($j = 0; $j -lt 10; $j++) {
         $exists = & wsl.exe -d Ubuntu -e bash -c "test -f $log_path_in_wsl && echo OK"
         if ($exists -match 'OK') { return $true }
