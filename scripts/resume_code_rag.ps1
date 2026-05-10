@@ -44,6 +44,82 @@ function Log($msg) {
 Log "=== Phase 60 resume start ==="
 Log "log: $log"
 
+# ----- Phase 60-N: launch mutex + orphan reaper -----------------------------
+# Two callers can race the launch: this script (autostart bootstrap or
+# manual) and dashboard.operations._start_vllm_in_wsl. Both check the same
+# vllm-launch.lock to prevent simultaneous spawns; the dashboard side uses
+# the Python SingletonLock against the same file. Concurrent callers
+# serialize -- the second one exits clean rather than spawning a duplicate.
+$dataDir       = "$env:USERPROFILE\Documents\code-rag-mcp\data"
+$launchLock    = Join-Path $dataDir "vllm-launch.lock"
+
+function TryAcquireLaunchLock {
+    if (-not (Test-Path -LiteralPath $dataDir)) {
+        New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
+    }
+    if (Test-Path -LiteralPath $launchLock) {
+        $existing = -1
+        try {
+            $existing = [int]((Get-Content -LiteralPath $launchLock -Raw -ErrorAction Stop).Trim())
+        } catch { $existing = -1 }
+        $alive = $false
+        if ($existing -gt 0) {
+            try { Get-Process -Id $existing -ErrorAction Stop | Out-Null; $alive = $true } catch {}
+        }
+        if ($alive) {
+            Log "vllm-launch.lock held by live PID $existing -- another launch in progress; exiting clean."
+            return $false
+        }
+        Log "vllm-launch.lock points at dead PID $existing; stealing."
+    }
+    Set-Content -LiteralPath $launchLock -Value "$PID" -Encoding UTF8 -NoNewline
+    Log "vllm-launch.lock acquired (pid=$PID)"
+    return $true
+}
+
+function ReleaseLaunchLock {
+    if (Test-Path -LiteralPath $launchLock) {
+        try {
+            $owner = [int]((Get-Content -LiteralPath $launchLock -Raw).Trim())
+            if ($owner -eq $PID) {
+                Remove-Item -LiteralPath $launchLock -Force
+                Log "vllm-launch.lock released"
+            }
+        } catch {}
+    }
+}
+
+# Reaper: kill any vLLM helper process whose parent is PID 1 (init reparent
+# = original parent died). EngineCore + multiprocessing.resource_tracker +
+# multiprocessing.spawn each hold GPU/RAM allocations for nothing once
+# orphaned. The pkill on `vllm serve` (round-5 fix) catches the parent but
+# Linux child reparenting keeps the workers alive; this catches them.
+function ReapOrphanVllmChildren {
+    Log "reaper: looking for orphan vLLM children (parent=PID 1)..."
+    $reapScript = @'
+n=0
+for pid in $(pgrep -P 1 2>/dev/null); do
+  comm=$(cat /proc/$pid/comm 2>/dev/null)
+  cmdline=$(tr "\0" " " < /proc/$pid/cmdline 2>/dev/null)
+  case "$comm" in
+    *EngineCore*|VLLM::*) kill -9 $pid 2>/dev/null && n=$((n+1));;
+  esac
+  case "$cmdline" in
+    *multiprocessing.resource_tracker*|*multiprocessing.spawn*)
+      kill -9 $pid 2>/dev/null && n=$((n+1));;
+  esac
+done
+echo $n
+'@
+    $reaped = & wsl.exe -d Ubuntu -e bash -lc $reapScript 2>$null
+    if (-not $reaped) { $reaped = "0" }
+    Log "  reaped $($reaped.ToString().Trim()) orphan vLLM child(ren)"
+}
+
+if (-not (TryAcquireLaunchLock)) { exit 0 }
+try {
+    ReapOrphanVllmChildren
+
 # ----- 0. Idempotency probe --------------------------------------------------
 # Audit fix: each retrigger of this task previously left zombie EngineCore
 # workers behind because the new `vllm serve` parent crashed on port-bind
@@ -116,6 +192,7 @@ if ($skipLaunch -or $embedAlreadyUp) {
         Log "  embed launched (log file present in WSL)"
     } else {
         Log "FATAL: wsl.exe didn't dispatch vLLM-embed launch -- log file never created. Bailing."
+        ReleaseLaunchLock
         exit 2
     }
 }
@@ -176,6 +253,7 @@ $rerankUp = WaitForPort 8001 "vLLM-rerank"
 
 if (-not $embedUp) {
     Log "ERROR: vLLM-embed never came up. Bailing -- indexer would just spam errors."
+    ReleaseLaunchLock
     exit 1
 }
 
@@ -197,7 +275,7 @@ Log "VRAM after vLLM up: $vram"
 # and noisier than the system actually is.
 $repoRoot = "$env:USERPROFILE\Documents\code-rag-mcp"
 $venvPy   = Join-Path $repoRoot ".venv\Scripts\python.exe"
-$dataDir  = Join-Path $repoRoot "data"
+# Note: $dataDir already initialized at script top for the launch mutex.
 
 function HasLiveLock {
     param([string]$LockPath)
@@ -223,11 +301,13 @@ $indexerLock = Join-Path $dataDir "indexer.lock"
 if (HasLiveLock $watcherLock) {
     Log "watcher already running (watcher.lock live) -- skipping indexer spawn."
     Log "=== Phase 60 resume complete (no new indexer; watcher covers it) ==="
+    ReleaseLaunchLock
     exit 0
 }
 if (HasLiveLock $indexerLock) {
     Log "another indexer already running (indexer.lock live) -- skipping spawn."
     Log "=== Phase 60 resume complete (no new indexer; one is in flight) ==="
+    ReleaseLaunchLock
     exit 0
 }
 
@@ -248,4 +328,9 @@ Log "=== Phase 60 resume complete ==="
 Log "vLLM-embed: $(if($embedUp){'UP'}else{'DOWN'})"
 Log "vLLM-rerank: $(if($rerankUp){'UP'}else{'DOWN (degraded; cross-encoder rerank unavailable)'})"
 Log "Indexer PID: $($proc.Id)"
+
+} finally {
+    # Phase 60-N: release the launch mutex so the next caller can acquire.
+    ReleaseLaunchLock
+}
 exit 0

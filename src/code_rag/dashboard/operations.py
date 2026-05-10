@@ -657,8 +657,38 @@ def _start_vllm_in_wsl(settings: Settings) -> StepResult:
       - Rerank failure is best-effort (non-fatal): the cross-encoder
         rerank step in queries will degrade to no-op if its endpoint is
         down. Embed failure IS fatal because nothing else can run.
+
+    Phase 60-N: takes the shared `data/vllm-launch.lock` to serialize
+    against scripts/resume_code_rag.ps1. Without this, the dashboard's
+    Start button could spawn a second pair of vLLM servers while the
+    autostart bootstrap was racing the same launch -- duplicates burn
+    ~10 GB VRAM each. Concurrent callers exit clean ("another launch in
+    progress") instead of stacking spawns.
     """
+    from code_rag.util.proc_hygiene import SingletonLock
     t0 = time.monotonic()
+
+    launch_lock_path = settings.paths.data_dir / "vllm-launch.lock"
+    launch_lock = SingletonLock(launch_lock_path).__enter__()
+    if not launch_lock.acquired:
+        return StepResult(
+            "start_vllm_in_wsl", True,
+            f"another vLLM launch in progress (vllm-launch.lock held by "
+            f"live PID); skipping.",
+            (time.monotonic() - t0) * 1000,
+        )
+
+    try:
+        return _start_vllm_in_wsl_locked(settings, t0)
+    finally:
+        launch_lock.__exit__(None, None, None)
+
+
+def _start_vllm_in_wsl_locked(settings: Settings, t0: float) -> StepResult:
+    """Phase 60-N: actual launch routine, runs only once the
+    vllm-launch.lock has been acquired. Split out so the lock-release
+    finally has a single clean exit point.
+    """
 
     def _server_up(port: int) -> bool:
         try:
