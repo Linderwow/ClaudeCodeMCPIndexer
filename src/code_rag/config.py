@@ -160,6 +160,21 @@ class LmJanitorConfig(BaseModel):
     interval_s: float = 60.0
 
 
+class AutoStopConfig(BaseModel):
+    """Phase 60-I: idle-watcher loop that auto-stops vLLM when no chroma
+    writes have happened in `idle_seconds`. Lets YouTubeBot's ComfyUI
+    render reclaim the 4090 unattended without needing a manual Stop
+    click. Wakes back up when a watcher file event signals demand.
+
+    Disabled by default — opt in when YouTubeBot/code-rag VRAM conflicts
+    matter for your workflow. Set `idle_seconds = 7200` (2 h) so a
+    60-min coffee break doesn't trigger a needless cold start.
+    """
+    enabled: bool = False
+    interval_s: float = 60.0
+    idle_seconds: float = 7200.0
+
+
 class DecomposeConfig(BaseModel):
     """Phase 37-A: query decomposition.
 
@@ -226,6 +241,7 @@ class Settings(BaseModel):
     mcp: McpConfig = Field(default_factory=McpConfig)
     query_rewriter: QueryRewriterConfig = Field(default_factory=QueryRewriterConfig)
     lm_janitor: LmJanitorConfig = Field(default_factory=LmJanitorConfig)
+    auto_stop: AutoStopConfig = Field(default_factory=AutoStopConfig)
     decompose: DecomposeConfig = Field(default_factory=DecomposeConfig)
     reflection: ReflectionConfig = Field(default_factory=ReflectionConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)

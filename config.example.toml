@@ -264,5 +264,15 @@ embed_concurrency = 4
 enabled    = true
 interval_s = 60.0
 
+[auto_stop]
+# Phase 60-I: idle-watcher that auto-stops vLLM when no chroma writes
+# have happened in `idle_seconds`. Lets a co-resident heavy GPU job
+# (e.g. ComfyUI rendering) claim the GPU without manual Stop. Wakes
+# on next watcher file event. ~30 s cold-start cost on wake. Disabled
+# by default — opt in when you have GPU-conflict workloads.
+enabled       = false
+interval_s    = 60.0    # how often the loop checks idle state
+idle_seconds  = 7200.0  # 2 hours of no chroma writes -> auto-stop
+
 [mcp]
 name = "code-rag"

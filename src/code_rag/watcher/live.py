@@ -171,6 +171,31 @@ class LiveWatcher:
         return False
 
     async def _apply(self, p: _Pending) -> None:
+        # Phase 60-I: demand-signal wake-up. If code-rag was auto-stopped
+        # due to idle, this file event IS the demand signal — clear the
+        # marker, spawn the resume script, and wait briefly for vLLM to
+        # come back before processing. Without this, the reindex would
+        # fail with ConnectionError on every embed call.
+        try:
+            from code_rag.util.auto_stop_loop import wake_if_auto_stopped
+            woke = await asyncio.to_thread(
+                wake_if_auto_stopped, self._settings.paths.data_dir,
+            )
+            if woke:
+                log.info("watcher.auto_stop_wake", path=p.path)
+                # Wait up to 90s for vLLM to come back. Best-effort —
+                # if the cold start takes longer, the embed call will
+                # fail and the next reindex pass will retry.
+                from code_rag.lms_ctl import server_is_up
+                base_url = self._settings.embedder.base_url
+                deadline = asyncio.get_event_loop().time() + 90.0
+                while asyncio.get_event_loop().time() < deadline:
+                    if server_is_up(base_url, timeout_s=2.0):
+                        break
+                    await asyncio.sleep(2.0)
+        except Exception as e:  # pragma: no cover — defensive
+            log.warning("watcher.wake_error", err=f"{type(e).__name__}: {e}")
+
         try:
             if p.kind is EventKind.DELETE:
                 rel = self._rel_path(Path(p.path))

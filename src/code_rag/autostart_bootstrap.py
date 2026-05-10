@@ -323,6 +323,43 @@ async def _run() -> int:
         janitor_enabled = getattr(janitor_cfg, "enabled", True) if janitor_cfg else True
         janitor_interval = float(getattr(janitor_cfg, "interval_s", 60.0)
                                  if janitor_cfg else 60.0)
+
+        # Phase 60-I: auto-stop loop. Kills vLLM after N hours of no
+        # chroma writes so YouTubeBot's ComfyUI render can claim the
+        # GPU. Wakes back up on the next watcher file event. Disabled
+        # by default — user opts in via [auto_stop] enabled=true in
+        # config.toml. Uses the same fire-and-forget pattern as the
+        # janitor so a glitch can't kill the watcher.
+        from code_rag.util.auto_stop_loop import auto_stop_loop
+        autostop_cfg = getattr(settings, "auto_stop", None)
+        autostop_enabled = (
+            getattr(autostop_cfg, "enabled", False)
+            if autostop_cfg else False
+        )
+        autostop_interval = float(
+            getattr(autostop_cfg, "interval_s", 60.0)
+            if autostop_cfg else 60.0
+        )
+        autostop_idle_seconds = float(
+            getattr(autostop_cfg, "idle_seconds", 7200)
+            if autostop_cfg else 7200
+        )
+        autostop_task: asyncio.Task | None = None
+        if autostop_enabled:
+            autostop_task = asyncio.create_task(
+                auto_stop_loop(
+                    settings,
+                    interval_s=autostop_interval,
+                    idle_seconds=autostop_idle_seconds,
+                ),
+                name="auto_stop_loop",
+            )
+            _plain_log(
+                autostart_log,
+                f"auto_stop loop started: idle_seconds={autostop_idle_seconds:.0f}s, "
+                f"interval_s={autostop_interval:.0f}s"
+            )
+
         if janitor_enabled:
             # Phase 38 (audit fix): the bare `asyncio.gather` cancels the
             # watcher if the janitor ever raises. The janitor's internal
@@ -352,8 +389,21 @@ async def _run() -> int:
                         autostart_log,
                         f"lm_janitor exited with {type(err).__name__}: {err}",
                     )
+                # Phase 60-I: also tear down the auto-stop loop if it ran.
+                if autostop_task is not None and not autostop_task.done():
+                    autostop_task.cancel()
+                    with contextlib.suppress(BaseException):
+                        await autostop_task
         else:
-            await watch_forever(settings, indexer)
+            try:
+                await watch_forever(settings, indexer)
+            finally:
+                # Phase 60-I: even when the janitor is disabled, the
+                # auto-stop task may be running. Tear it down on exit.
+                if autostop_task is not None and not autostop_task.done():
+                    autostop_task.cancel()
+                    with contextlib.suppress(BaseException):
+                        await autostop_task
         _plain_log(autostart_log, "watcher exited normally")
         return 0
     finally:

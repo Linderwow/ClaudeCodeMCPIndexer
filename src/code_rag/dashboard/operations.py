@@ -559,6 +559,17 @@ def start_all(settings: Settings, *, force: bool = False) -> CompositeResult:
         "stop intent cleared" if cleared else "could not clear marker",
         duration_ms=0.0,
     ))
+    # Phase 60-I: also clear the auto-stop marker so a Start click
+    # supersedes any pending idle-stop state.
+    from code_rag.util.auto_stop_marker import clear_auto_stopped
+    auto_cleared = clear_auto_stopped(settings.paths.data_dir,
+                                      reason="dashboard.start_all")
+    if not auto_cleared:
+        res.add(StepResult(
+            "clear_auto_stop_marker", False,
+            "could not clear auto-stop marker (non-fatal)",
+            duration_ms=0.0,
+        ))
 
     # Phase 60-G: dispatch on base_url. vLLM is on :8000 by convention; LM
     # Studio on :1234. Anything else falls through to the LM Studio path
