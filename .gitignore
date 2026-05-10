@@ -6,6 +6,9 @@ logs/
 config.toml
 *.bak
 *.bak_*
+# Phase 60-M: round-4 audit artifacts. Edit-with-rollback flows leave
+# `<file>.pre-<phase>` snapshots that should never get committed.
+*.pre-*
 
 # --- python ------------------------------------------------------------------
 __pycache__/

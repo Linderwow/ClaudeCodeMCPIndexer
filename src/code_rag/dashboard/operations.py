@@ -462,14 +462,40 @@ def _index_status(settings: Settings) -> dict[str, Any]:
     #     fired). Shows up after an overnight chroma corruption reset.
     #   - "catching_up":   0 < vectors < chunks (regular catch-up).
     #   - "live":          vectors >= chunks (steady state).
+    #
+    # Phase 60-M: the original `vector_count == 0` test races -- vectors
+    # transitions 0 -> N+ within seconds of the wipe-detector clearing
+    # file_hashes, so a 5s dashboard poll almost never catches the zero
+    # window. autostart_bootstrap now writes a sticky `.wipe_recovery`
+    # marker when it fires. We read the marker and keep declaring
+    # "wipe_recovery" until vectors climb back to >= 95% of fts (at which
+    # point we delete the marker so it doesn't linger past the recovery).
+    wipe_marker = settings.paths.data_dir / ".wipe_recovery"
+    wipe_marker_active = wipe_marker.exists()
     state = None
     if chunk_count and vector_count is not None:
-        if vector_count == 0 and chunk_count > 100:
+        # 95%-of-chunks recovery threshold: anything above and we declare
+        # recovery complete and tear down the marker.
+        recovered = (
+            reindex_pct is not None and reindex_pct >= 95.0
+        )
+        if wipe_marker_active and not recovered:
+            state = "wipe_recovery"
+        elif vector_count == 0 and chunk_count > 100:
+            # Defensive: marker missing (e.g. wiped manually) but state still
+            # matches -- still paint wipe_recovery rather than catching_up.
             state = "wipe_recovery"
         elif reindex_pct is not None and reindex_pct < 99.0:
             state = "catching_up"
         else:
             state = "live"
+        # Tear down the marker once we're past the recovery threshold so
+        # subsequent polls return to the regular catching_up/live ladder.
+        if wipe_marker_active and recovered:
+            try:
+                wipe_marker.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     return {
         "present":         True,

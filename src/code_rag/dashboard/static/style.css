@@ -511,7 +511,9 @@ code { font-family: var(--mono); font-size: 12px; color: var(--text-mute); }
   margin: 16px 18px 0;
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  /* Phase 60-M: was var(--radius-md) which is undefined; --radius (10px) is
+     the canonical card corner radius and matches every other card. */
+  border-radius: var(--radius);
   padding: 10px 14px 12px;
 }
 .reindex > .card-header {

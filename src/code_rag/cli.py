@@ -170,8 +170,42 @@ def status(ctx: click.Context) -> None:
               help="Reindex a single file or subtree. Omit to reindex everything.")
 @click.pass_context
 def index(ctx: click.Context, path_: Path | None) -> None:
-    """Build or refresh the code index (walk -> chunk -> embed -> Chroma)."""
+    """Build or refresh the code index (walk -> chunk -> embed -> Chroma).
+
+    Phase 60-M: refuses to start if the watcher is already running (the
+    watcher's own reindex_all covers what we'd do, and Kuzu single-writes
+    to graph.kz so a parallel indexer just produces a noisy
+    'Could not set lock on file' failure). Also takes its own
+    `indexer.lock` to prevent two cmd_index spawns from racing each other
+    when resume_code_rag.ps1 fires repeatedly.
+    """
     settings = ctx.obj["settings"]
+    from code_rag.util.proc_hygiene import SingletonLock, is_process_alive
+
+    # Phase 60-M: bail out cleanly (rc=0) when the watcher owns watcher.lock.
+    # The watcher does reindex_all on startup; any cmd_index spawned by
+    # resume_code_rag.ps1 in parallel just collides on graph.kz and produces
+    # an indexer_*.err artifact for nothing.
+    watcher_lock_path = settings.paths.data_dir / "watcher.lock"
+    if watcher_lock_path.exists():
+        try:
+            holder = int(watcher_lock_path.read_text("utf-8").strip())
+        except (ValueError, OSError):
+            holder = -1
+        if holder > 0 and is_process_alive(holder):
+            click.echo(
+                f"watcher (pid {holder}) is already indexing; exiting clean.",
+            )
+            sys.exit(0)
+
+    indexer_lock_path = settings.paths.data_dir / "indexer.lock"
+    indexer_lock = SingletonLock(indexer_lock_path).__enter__()
+    if not indexer_lock.acquired:
+        click.echo(
+            f"another `code-rag index` is already running "
+            f"(see {indexer_lock_path}); exiting clean.",
+        )
+        sys.exit(0)
 
     async def _run() -> int:
         from code_rag.indexing.file_hash import FileHashRegistry
@@ -215,7 +249,10 @@ def index(ctx: click.Context, path_: Path | None) -> None:
             hashes.close()
             await embedder.aclose()
 
-    sys.exit(asyncio.run(_run()))
+    try:
+        sys.exit(asyncio.run(_run()))
+    finally:
+        indexer_lock.__exit__(None, None, None)
 
 
 @main.command()

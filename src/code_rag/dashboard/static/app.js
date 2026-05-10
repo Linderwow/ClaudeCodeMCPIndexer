@@ -309,9 +309,16 @@
             rateLine = `${rate.toFixed(1)} vec/sec`;
             const remaining = chunks - vectors;
             const etaSec = remaining / rate;
-            if (etaSec < 60)        etaLine = `~${Math.ceil(etaSec)}s remaining`;
-            else if (etaSec < 3600) etaLine = `~${Math.ceil(etaSec / 60)} min remaining`;
-            else                    etaLine = `~${(etaSec / 3600).toFixed(1)} h remaining`;
+            // Phase 60-M: cap the ETA display at >=12h. Anything above
+            // that is dominated by chromadb commit-batching artifacts
+            // (rate samples briefly drop near zero between batches and
+            // a naive remaining/rate produces alarmist 100h+ numbers).
+            // The cap means: "we don't trust the rate enough to give you
+            // a number" -- which is the honest answer in that regime.
+            if (etaSec >= 12 * 3600)   etaLine = '>=12 h (rate unstable)';
+            else if (etaSec < 60)      etaLine = `~${Math.ceil(etaSec)}s remaining`;
+            else if (etaSec < 3600)    etaLine = `~${Math.ceil(etaSec / 60)} min remaining`;
+            else                       etaLine = `~${(etaSec / 3600).toFixed(1)} h remaining`;
           } else {
             // Phase 60 audit fix: stall detection now looks at the LAST 30s
             // of the window, not the entire (up-to-120s) window. Old code

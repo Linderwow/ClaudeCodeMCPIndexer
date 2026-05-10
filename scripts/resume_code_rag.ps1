@@ -178,10 +178,50 @@ Log "VRAM after vLLM up: $vram"
 # pipe buffers fill at ~64 KB each and the indexer would block on stdout
 # once it logged enough HTTP requests. Fix: use Start-Process with file
 # redirection so the OS handles the bytes; we never touch the pipes.
+#
+# Phase 60-M idempotency: skip the spawn entirely when the watcher OR another
+# indexer already holds its singleton lock. cmd_index would also exit 0 on
+# its own (the lock check inside Click), but spawning anyway leaves an empty
+# indexer_<ts>.err file every wake -- which makes the logs/ dir look cluttered
+# and noisier than the system actually is.
 $repoRoot = "$env:USERPROFILE\Documents\code-rag-mcp"
 $venvPy   = Join-Path $repoRoot ".venv\Scripts\python.exe"
-$idxLog   = Join-Path $logDir "indexer_$ts.log"
-$idxErr   = Join-Path $logDir "indexer_$ts.err"
+$dataDir  = Join-Path $repoRoot "data"
+
+function HasLiveLock {
+    param([string]$LockPath)
+    if (-not (Test-Path -LiteralPath $LockPath)) { return $false }
+    try {
+        $pidStr = (Get-Content -LiteralPath $LockPath -Raw -ErrorAction Stop).Trim()
+        $holderPid = [int]$pidStr
+    } catch {
+        return $false
+    }
+    if ($holderPid -le 0) { return $false }
+    try {
+        $proc = Get-Process -Id $holderPid -ErrorAction Stop
+        return $null -ne $proc
+    } catch {
+        return $false
+    }
+}
+
+$watcherLock = Join-Path $dataDir "watcher.lock"
+$indexerLock = Join-Path $dataDir "indexer.lock"
+
+if (HasLiveLock $watcherLock) {
+    Log "watcher already running (watcher.lock live) -- skipping indexer spawn."
+    Log "=== Phase 60 resume complete (no new indexer; watcher covers it) ==="
+    exit 0
+}
+if (HasLiveLock $indexerLock) {
+    Log "another indexer already running (indexer.lock live) -- skipping spawn."
+    Log "=== Phase 60 resume complete (no new indexer; one is in flight) ==="
+    exit 0
+}
+
+$idxLog = Join-Path $logDir "indexer_$ts.log"
+$idxErr = Join-Path $logDir "indexer_$ts.err"
 Log "restarting bulk indexer (will skip already-done files via file_hashes.db)..."
 $proc = Start-Process -FilePath $venvPy `
                       -ArgumentList @('-m', 'code_rag', 'index') `

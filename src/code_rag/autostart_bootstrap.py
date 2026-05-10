@@ -296,6 +296,26 @@ async def _run() -> int:
                 )
                 log.warning("autostart.chroma_wipe_detected",
                             fts=fts_count, file_hashes_cleared=cleared)
+                # Phase 60-M: write a sticky marker the dashboard can read.
+                # Without this, the dashboard's wipe_recovery state classifier
+                # races: vectors transitions 0 -> N+ within the first poll
+                # interval, so the briefly-zero window is invisible. The
+                # marker lives until the dashboard sees vectors back to ~95%
+                # of fts and clears it (see operations._index_status).
+                try:
+                    import json as _json
+                    import time as _t
+                    wipe_marker = settings.paths.data_dir / ".wipe_recovery"
+                    wipe_marker.write_text(_json.dumps({
+                        "detected_at": _t.time(),
+                        "fts_at_detect": fts_count,
+                        "file_hashes_cleared": cleared,
+                    }), encoding="utf-8")
+                    _plain_log(autostart_log,
+                               f"  wrote {wipe_marker.name} marker for dashboard")
+                except Exception as me:
+                    _plain_log(autostart_log,
+                               f"  WARN: could not write wipe_recovery marker: {me}")
             except Exception as e:
                 _plain_log(autostart_log,
                            f"WARN: file_hashes.clear_all failed: {e} — "
@@ -414,6 +434,35 @@ async def _run() -> int:
                 f"auto_stop loop started: idle_seconds={autostop_idle_seconds:.0f}s, "
                 f"interval_s={autostop_interval:.0f}s"
             )
+
+        # Phase 60-M: round-4 audit minor — startup probe of /api/v0/models
+        # before launching the janitor loop. Post-Phase-60 the embedder.kind
+        # is historically "lm_studio" but the URL points at vLLM, which
+        # returns 404 on the LM Studio admin API. The janitor would happily
+        # poll every interval_s for the lifetime of the watcher (one wasted
+        # HTTP per cycle). The probe lets us short-circuit when the admin
+        # API isn't really there.
+        if janitor_enabled:
+            try:
+                import httpx as _hx
+                _root = settings.embedder.base_url.rstrip("/")
+                if _root.endswith("/v1"):
+                    _root = _root[: -len("/v1")]
+                _probe = _hx.get(f"{_root}/api/v0/models", timeout=2.0)
+                if _probe.status_code == 404:
+                    janitor_enabled = False
+                    _plain_log(
+                        autostart_log,
+                        "lm_janitor disabled: /api/v0/models returns 404 "
+                        "(server is vLLM/TEI/sglang, not LM Studio)"
+                    )
+            except Exception as e:
+                # Server unreachable -- janitor would also fail; skip cleanly.
+                janitor_enabled = False
+                _plain_log(
+                    autostart_log,
+                    f"lm_janitor disabled: probe failed: {type(e).__name__}: {e}"
+                )
 
         if janitor_enabled:
             # Phase 38 (audit fix): the bare `asyncio.gather` cancels the
