@@ -456,11 +456,27 @@ def _index_status(settings: Settings) -> dict[str, Any]:
     if chunk_count and vector_count is not None and chunk_count > 0:
         reindex_pct = round(100.0 * vector_count / chunk_count, 1)
 
+    # Phase 60-K: classify the reindex state so the dashboard can show
+    # WHY catch-up is running. Three states:
+    #   - "wipe_recovery": vectors=0 but chunks>0 (Phase 60-K detector
+    #     fired). Shows up after an overnight chroma corruption reset.
+    #   - "catching_up":   0 < vectors < chunks (regular catch-up).
+    #   - "live":          vectors >= chunks (steady state).
+    state = None
+    if chunk_count and vector_count is not None:
+        if vector_count == 0 and chunk_count > 100:
+            state = "wipe_recovery"
+        elif reindex_pct is not None and reindex_pct < 99.0:
+            state = "catching_up"
+        else:
+            state = "live"
+
     return {
         "present":         True,
         "chunks":          chunk_count,
         "vectors":         vector_count,        # Phase 60-A2
         "reindex_pct":     reindex_pct,         # Phase 60-A2: vectors/chunks
+        "state":           state,                # Phase 60-K
         "embedder_kind":   meta.get("embedder_kind"),
         "embedder_model":  meta.get("embedder_model"),
         "embedder_dim":    meta.get("embedder_dim"),

@@ -246,6 +246,61 @@ async def _run() -> int:
         except Exception as e:
             _plain_log(autostart_log, f"file_hash open failed (non-fatal): {e}")
 
+        # Phase 60-K: chroma-wipe detector. Overnight unclean shutdowns
+        # (sleep mid-write, WSL crash, the auto-stop loop's pkill firing
+        # while a chroma write was in flight) can leave chromadb in a
+        # state where its own integrity check resets the embeddings table
+        # to zero on next open. fts.db isn't affected (independent SQLite
+        # WAL), so we end up with N chunks and 0 vectors — search dense-
+        # arm dies, cross-encoder rerank gets nothing useful to re-rank,
+        # MCP results visibly degrade.
+        #
+        # Without this guard, the catch-up reindex below sees file_hashes
+        # full ("we already indexed all of these") and is a no-op against
+        # the empty chroma. Detect + clear file_hashes so the catch-up
+        # actually re-vectorizes everything.
+        # Audit fix: probe each store's count individually so a chromadb
+        # internal error (which is the very signal we're trying to
+        # detect) doesn't disable the detector. The fts threshold is
+        # `> 0` not `> 100` so small repos are also covered — the
+        # `file_hashes > 0` co-condition keeps us from false-positive
+        # firing on a brand-new install.
+        chroma_count = -1
+        fts_count = -1
+        hash_count = -1
+        try:
+            chroma_count = vec.count()
+        except Exception as e:
+            _plain_log(autostart_log, f"wipe-detector chroma.count failed: {e}")
+        try:
+            fts_count = lex.count() if hasattr(lex, "count") else -1
+        except Exception as e:
+            _plain_log(autostart_log, f"wipe-detector lex.count failed: {e}")
+        try:
+            hash_count = hashes.count()
+        except Exception as e:
+            _plain_log(autostart_log, f"wipe-detector hashes.count failed: {e}")
+
+        if chroma_count == 0 and fts_count > 0 and hash_count > 0:
+            _plain_log(
+                autostart_log,
+                f"WIPE DETECTED: chroma=0 vectors but fts={fts_count} chunks "
+                f"and file_hashes={hash_count} entries. Clearing file_hashes "
+                "to force a full re-vectorize via the catch-up loop below."
+            )
+            try:
+                cleared = hashes.clear_all()
+                _plain_log(
+                    autostart_log,
+                    f"  cleared {cleared} file_hash entries; catch-up will re-embed everything"
+                )
+                log.warning("autostart.chroma_wipe_detected",
+                            fts=fts_count, file_hashes_cleared=cleared)
+            except Exception as e:
+                _plain_log(autostart_log,
+                           f"WARN: file_hashes.clear_all failed: {e} — "
+                           "catch-up will be a no-op until file_hashes is wiped manually")
+
         # Phase 35: graph ingestion is SKIPPED during the catch-up reindex.
         #
         # Why: GraphIngester.transient opens+closes Kuzu per file event.

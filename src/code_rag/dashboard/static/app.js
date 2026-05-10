@@ -224,16 +224,21 @@
     $('index-embedder-dim').textContent =
       idx.embedder_dim ? `dim ${idx.embedder_dim}` : '';
 
-    // State pill: live / catching up / idle (auto-stopped) / stopped
-    // (user). Determined from lm_studio.server_up + reindex_pct.
+    // State pill: live / catching up / wipe-recovery / down. Determined
+    // from lm_studio.server_up + index.state (Phase 60-K) + reindex_pct.
     const lmsUp_idx = !!(s.lm_studio && s.lm_studio.server_up);
     let stateLabel = 'live';
     let stateClass = 'status-pill ok';
     let stateDetail = 'embedder reachable';
+    const indexState = idx.state;  // Phase 60-K: 'wipe_recovery' | 'catching_up' | 'live'
     if (!lmsUp_idx) {
       stateLabel = 'down';
       stateClass = 'status-pill err';
       stateDetail = 'embedder unreachable';
+    } else if (indexState === 'wipe_recovery') {
+      stateLabel = 'wipe recovery';
+      stateClass = 'status-pill err';
+      stateDetail = 'chroma was wiped — re-vectorizing all chunks';
     } else if (pct !== null && pct < 99.0) {
       stateLabel = 'catching up';
       stateClass = 'status-pill warn';

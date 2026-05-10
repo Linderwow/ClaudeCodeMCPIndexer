@@ -130,6 +130,26 @@ class FileHashRegistry:
                 "DELETE FROM file_hashes WHERE rel_path = ?", (rel_path,),
             )
 
+    def clear_all(self) -> int:
+        """Phase 60-K: drop EVERY row. Returns the row count cleared.
+
+        Used when chroma data has been wiped externally (overnight
+        corruption + chromadb's reset-on-corruption behavior). Without
+        clearing file_hashes, the indexer's `is_unchanged` skip-fast
+        guard would treat every file as already-indexed and produce a
+        no-op reindex against the empty chroma. Clearing forces a full
+        re-chunk + re-embed.
+        """
+        with self._lock, self._require():
+            cur = self._require().execute("DELETE FROM file_hashes")
+            # rowcount returns -1 in some sqlite/driver combos for
+            # journal_mode=DELETE; clamp to 0 so the caller's log line
+            # ("cleared N entries") doesn't read as a negative count.
+            return max(0, cur.rowcount or 0)
+
+    # Note: count() is defined above (line ~88) — Phase 60-K originally
+    # added a duplicate here that the round-3 audit caught. Removed.
+
     def list_paths(self) -> set[str]:
         with self._lock:
             rows = self._require().execute(

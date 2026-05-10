@@ -215,3 +215,45 @@ def test_indexer_re_embeds_when_content_changes(
         vec.close()
         lex.close()
         hashes.close()
+
+# ---- Phase 60-K: clear_all + count ----------------------------------------
+
+
+def test_phase60k_clear_all_drops_all_rows(tmp_path):
+    """clear_all() should remove every entry. Used by the autostart
+    wipe-detector when chroma comes back empty after corruption."""
+    from code_rag.indexing.file_hash import FileHashRegistry
+
+    db = tmp_path / "fh.db"
+    fh = FileHashRegistry(db)
+    fh.open()
+    try:
+        fh.upsert("a.py", b"abc")
+        fh.upsert("b.py", b"def")
+        fh.upsert("c.py", b"ghi")
+        assert fh.count() == 3
+
+        cleared = fh.clear_all()
+        assert cleared == 3, f"expected 3 cleared, got {cleared}"
+        assert fh.count() == 0, "rows should be gone"
+
+        # is_unchanged on a previously-stored path must now return False
+        # (every file is a new file post-clear).
+        assert not fh.is_unchanged("a.py", b"abc")
+    finally:
+        fh.close()
+
+
+def test_phase60k_clear_all_on_empty_returns_zero(tmp_path):
+    """Clearing an empty registry is a no-op that returns 0."""
+    from code_rag.indexing.file_hash import FileHashRegistry
+
+    db = tmp_path / "fh.db"
+    fh = FileHashRegistry(db)
+    fh.open()
+    try:
+        assert fh.count() == 0
+        assert fh.clear_all() == 0
+    finally:
+        fh.close()
+
