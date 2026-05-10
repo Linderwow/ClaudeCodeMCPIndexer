@@ -93,6 +93,7 @@ globs = [
     "**/*.map",
     "**/*.bundle.js",             # webpack-style bundles (also chunker-hostile)
     "**/*.chunk.js",              # code-split chunks (same)
+    "**/*.pack.js",               # jquery-style packed minification (Phase 60-O hotfix)
     "**/package-lock.json",
     "**/yarn.lock",
     "**/pnpm-lock.yaml",

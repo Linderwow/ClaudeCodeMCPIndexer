@@ -140,6 +140,39 @@ def test_rrf_weights_length_mismatch_raises() -> None:
         reciprocal_rank_fusion(arms, weights=[1.0, 1.0, 1.0])
 
 
+# ---- DocChunker oversize-paragraph hard-split ------------------------------
+
+
+def test_doc_chunker_hard_splits_oversize_paragraphs() -> None:
+    """The original `_split_text_windows` only split at \\n\\n boundaries,
+    so a single paragraph larger than max_chars was emitted whole. vLLM's
+    embedder rejected those as "context > 8192 tokens" and the indexer
+    silently dropped 1,470 chunks (151 files) on the production reindex.
+    Pin the new contract: NO emitted chunk exceeds max_chars."""
+    from code_rag.chunking.docs import DocChunker
+    chunker = DocChunker(min_chars=50, max_chars=2400)
+    # One giant paragraph = 50,000 chars, no blank lines anywhere.
+    giant = "x" * 50000
+    chunks = chunker._split_text_windows(giant)
+    assert len(chunks) > 1, \
+        "oversize paragraph must produce multiple chunks (was 1)"
+    for c in chunks:
+        assert len(c) <= 2400, \
+            f"chunk exceeded max_chars: {len(c)} > 2400 -- vLLM would 400"
+
+
+def test_doc_chunker_preserves_normal_paragraphs() -> None:
+    """Backwards compat: regular markdown still gets paragraph-aware packing."""
+    from code_rag.chunking.docs import DocChunker
+    chunker = DocChunker(min_chars=50, max_chars=2400)
+    text = "First paragraph here.\n\nSecond paragraph here.\n\nThird paragraph."
+    chunks = chunker._split_text_windows(text)
+    # Small enough to fit in one window.
+    assert len(chunks) == 1
+    assert "First paragraph" in chunks[0]
+    assert "Third paragraph" in chunks[0]
+
+
 # ---- P6: chroma delete_by_path returns 0/1 cheaply --------------------------
 
 

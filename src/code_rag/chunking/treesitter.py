@@ -200,13 +200,37 @@ class TreeSitterChunker:
         text = src.decode("utf-8", "replace")
         if len(text) < self._min:
             return []
-        lines = text.splitlines(keepends=True)
+        # Phase 60-O hotfix: hard-split any line that already exceeds
+        # max_chars BEFORE the line-windower runs. Without this, a single
+        # giant line in a packed/minified JS or a wrapped log dump gets
+        # emitted as one oversized chunk -> vLLM 400 -> chunk lost. Same
+        # latent bug we just fixed in DocChunker._split_text_windows.
+        # Each entry is (text, real_line_advance) so the start_line /
+        # end_line counters stay accurate for downstream symbol resolution.
+        raw_lines = text.splitlines(keepends=True)
+        lines: list[tuple[str, int]] = []
+        for ln in raw_lines:
+            if len(ln) <= self._max:
+                lines.append((ln, 1))
+                continue
+            stripped = ln.rstrip("\r\n")
+            tail = ln[len(stripped):]
+            pieces = [
+                stripped[i : i + self._max]
+                for i in range(0, len(stripped), self._max)
+            ]
+            # Re-attach the original line ending to the last piece only.
+            for i, piece in enumerate(pieces):
+                last = i == len(pieces) - 1
+                # Only the FIRST synthetic piece advances the real-line
+                # counter; the others belong to the same physical line.
+                lines.append((piece + (tail if last else ""), 1 if i == 0 else 0))
         out: list[Chunk] = []
         buf: list[str] = []
         buf_len = 0
         start_line = 1
         cur_line = 1
-        for ln in lines:
+        for ln, line_advance in lines:
             if buf_len + len(ln) > self._max and buf:
                 chunk_text = "".join(buf)
                 window_sym = f"window:{start_line}"
@@ -226,7 +250,7 @@ class TreeSitterChunker:
                 start_line = cur_line
             buf.append(ln)
             buf_len += len(ln)
-            cur_line += 1
+            cur_line += line_advance
         if buf and buf_len >= self._min:
             chunk_text = "".join(buf)
             window_sym = f"window:{start_line}"

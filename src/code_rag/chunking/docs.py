@@ -205,11 +205,31 @@ class DocChunker:
         if not text:
             return []
         # Paragraph-aware packing: split on blank lines, pack until max_chars.
+        # Phase 60-O hotfix: a single paragraph larger than max_chars (common
+        # in dense markdown -- big tables, log dumps, NPS survey responses
+        # without blank lines) used to be emitted as ONE oversized chunk.
+        # vLLM's embedder enforces max_model_len=8192 tokens; oversized
+        # chunks 400'd silently and 1,470 vectors / 151 files were missing
+        # from the index. Now we hard-split oversize paragraphs at char
+        # boundaries so EVERY emitted chunk is <= max_chars.
         paras = [p.strip() for p in text.split("\n\n") if p.strip()]
+        # Hard-split any paragraph that exceeds max_chars BEFORE packing.
+        # Window size leaves a small headroom so the chunk-with-separator
+        # join below doesn't push us over.
+        hard_max = max(self._max - 2, 1)
+        normalized: list[str] = []
+        for p in paras:
+            if len(p) <= hard_max:
+                normalized.append(p)
+                continue
+            # Try line-boundary split first to keep chunks readable; fall
+            # back to character window if a single line is over hard_max.
+            for i in range(0, len(p), hard_max):
+                normalized.append(p[i : i + hard_max])
         out: list[str] = []
         buf: list[str] = []
         buf_len = 0
-        for p in paras:
+        for p in normalized:
             if buf_len + len(p) + 2 > self._max and buf:
                 out.append("\n\n".join(buf))
                 buf = []

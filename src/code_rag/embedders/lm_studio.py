@@ -121,6 +121,42 @@ class LMStudioEmbedder(Embedder):
         items = sorted(data["data"], key=lambda d: d["index"])
         return [item["embedding"] for item in items]
 
+    async def _raw_embed_with_400_split(
+        self, texts: Sequence[str],
+    ) -> list[list[float]]:
+        # Phase 60-O hotfix (round 2): when vLLM returns 400 (typically
+        # "context length 8192 tokens" exceeded by ONE oversized chunk in
+        # the batch), the entire batch fails. Previously this discarded up
+        # to 32 chunks for one bad input. Now: on 400 with batch>1, fall
+        # back to per-item embedding so good inputs still land. Bad inputs
+        # are zero-padded with the embedder's dim so the caller can still
+        # tell stride from index-by-position. The DocChunker hard-split
+        # fix should make this never trigger -- this is the last-line
+        # defense if a code chunk somehow exceeds max_model_len.
+        try:
+            return await self._raw_embed_with_retry(texts)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code != 400 or len(texts) <= 1:
+                raise
+            log.warning("embedder.batch_400_split",
+                        size=len(texts),
+                        body=e.response.text[:200])
+            out: list[list[float]] = []
+            for t in texts:
+                try:
+                    one = await self._raw_embed_with_retry([t])
+                    out.append(one[0])
+                except httpx.HTTPStatusError as inner:
+                    if inner.response.status_code == 400:
+                        # Bad chunk -- skip with zero vector so caller's
+                        # stride stays right; len() will tell them.
+                        log.warning("embedder.chunk_400_skipped",
+                                    chars=len(t), body=inner.response.text[:160])
+                        out.append([0.0] * self._dim)
+                    else:
+                        raise
+            return out
+
     async def embed(self, texts: Sequence[str]) -> list[list[float]]:
         if not texts:
             return []
@@ -129,7 +165,7 @@ class LMStudioEmbedder(Embedder):
         out: list[list[float]] = []
         for i in range(0, len(texts), self._batch):
             chunk = texts[i : i + self._batch]
-            vecs = await self._raw_embed_with_retry(chunk)
+            vecs = await self._raw_embed_with_400_split(chunk)
             if any(len(v) != self._dim for v in vecs):
                 raise RuntimeError(
                     f"Embedding dim drift: expected {self._dim}, got {[len(v) for v in vecs]}"
