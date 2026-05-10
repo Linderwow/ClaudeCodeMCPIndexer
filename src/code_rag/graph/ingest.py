@@ -80,6 +80,30 @@ class GraphIngester:
         finally:
             self._return_store(store)
 
+    def replace_for_path(
+        self, path: str, symbols: list, edges: list,
+    ) -> None:
+        """Phase 60-F audit fix: atomic per-path replace (delete + upsert) at
+        the graph-store level. Use this instead of separate `delete_by_path`
+        + `commit` when those calls would otherwise straddle a released
+        asyncio lock — the kuzu store's RLock guarantees the whole replace
+        happens under one acquisition, so two workers reindexing the same
+        path can't interleave their writes."""
+        store = self._borrow_store()
+        try:
+            # KuzuGraphStore exposes replace_for_path; other backends may
+            # not — fall back to delete + upsert under whatever locking
+            # they offer.
+            if hasattr(store, "replace_for_path"):
+                store.replace_for_path(path, symbols, edges)  # type: ignore[attr-defined]
+            else:
+                store.delete_by_path(path)
+                if symbols or edges:
+                    store.upsert_symbols(symbols)
+                    store.upsert_edges(edges)
+        finally:
+            self._return_store(store)
+
     def ingest(self, abs_path: Path, rel_path: str, language: str) -> None:
         """Single-call parse-and-commit. Kept for the watcher path (which
         is single-file-at-a-time and re-opens Kuzu per event so the lock

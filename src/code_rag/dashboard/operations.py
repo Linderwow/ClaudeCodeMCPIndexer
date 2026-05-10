@@ -516,26 +516,22 @@ def _budget_verdict_for_code_rag():
 def start_all(settings: Settings, *, force: bool = False) -> CompositeResult:
     """Bring the whole stack up.
 
-    Order matters: LM Studio first (the watcher needs the embedder), then
-    pre-load models, then the Task Scheduler watcher.
+    Phase 60-G: post LM-Studio era. The embedder is now vLLM-in-WSL
+    (port 8000) plus an optional rerank vLLM (port 8001). When the
+    configured base_url points at :8000 we take the vLLM path:
 
-    Phase 39: also clears the `data/.stopped` intent marker so the reaper
-    resumes its normal auto-respawn-on-crash behavior.
+        clear stop marker -> start vLLM-embed in WSL -> start vLLM-rerank
+        (best-effort) -> wait for /v1/models on both -> start watcher.
 
-    Phase 47 → Phase 52: budget-aware refuse. The simple "> 50% VRAM"
-    check from Phase 47 is replaced with the resource_budget arbitrator:
-    we know code-rag's expected RAM + VRAM cost (~14 GB / 12 GB for the
-    full stack with HyDE), so we check `current_used + cost <= total
-    - reserve` and bail with an actionable message if not. Force-
-    override via `force=True` (dashboard query param `?force=1`).
+    Legacy LM Studio path (base_url :1234) is preserved verbatim for
+    rollback compatibility.
+
+    Phase 47 -> 52: budget-aware refuse. Uses resource_budget.PROJECT_COSTS
+    to refuse before OOM. Override with force=True (dashboard `?force=1`).
     """
     res = CompositeResult()
 
-    # Phase 52: budget-aware safety gate — uses the code-rag project's
-    # declared RAM + VRAM cost from resource_budget.PROJECT_COSTS instead
-    # of the previous generic "> 50% VRAM" check. Same intent (refuse
-    # before triggering an OOM cascade) but the reasoning is sharper:
-    # we know exactly what code-rag needs and what's left after reserve.
+    # Phase 52: budget-aware safety gate.
     if not force:
         verdict = _budget_verdict_for_code_rag()
         if verdict is not None:
@@ -554,9 +550,7 @@ def start_all(settings: Settings, *, force: bool = False) -> CompositeResult:
                 duration_ms=0.0,
             ))
 
-    # Phase 39: clear stop intent BEFORE starting anything else, so the
-    # reaper (or daily redeploy) doesn't see a transient state where
-    # the watcher is alive but the marker still says "stay stopped".
+    # Phase 39: clear stop intent BEFORE starting.
     from code_rag.util.stop_marker import clear_intentionally_stopped
     cleared = clear_intentionally_stopped(settings.paths.data_dir,
                                           reason="dashboard.start_all")
@@ -566,16 +560,127 @@ def start_all(settings: Settings, *, force: bool = False) -> CompositeResult:
         duration_ms=0.0,
     ))
 
-    res.add(start_lms_server(settings))
-    if not res.steps[-1].ok:
-        return res
+    # Phase 60-G: dispatch on base_url. vLLM is on :8000 by convention; LM
+    # Studio on :1234. Anything else falls through to the LM Studio path
+    # for backward compat (will fail cleanly if the binary isn't there).
+    # Use getattr+default so test stubs without `base_url` keep working.
+    # Audit fix: parse the URL properly so `http://localhost:18000/v1`
+    # doesn't false-match the substring ":8000".
+    from urllib.parse import urlparse
+    base_url = getattr(settings.embedder, "base_url", "").rstrip("/")
+    try:
+        is_vllm = urlparse(base_url).port == 8000
+    except (ValueError, AttributeError):
+        is_vllm = False
 
-    res.add(load_model(settings.embedder.model, _LMS_LOAD_TIMEOUT))
-    if settings.reranker.kind == "lm_chat" and settings.reranker.model:
-        res.add(load_model(settings.reranker.model, _LMS_LOAD_TIMEOUT))
+    if is_vllm:
+        res.add(_start_vllm_in_wsl(settings))
+        if not res.steps[-1].ok:
+            return res
+    else:
+        # Legacy LM Studio path.
+        res.add(start_lms_server(settings))
+        if not res.steps[-1].ok:
+            return res
+        res.add(load_model(settings.embedder.model, _LMS_LOAD_TIMEOUT))
+        if settings.reranker.kind == "lm_chat" and settings.reranker.model:
+            res.add(load_model(settings.reranker.model, _LMS_LOAD_TIMEOUT))
 
     res.add(start_watcher_task())
     return res
+
+
+def _start_vllm_in_wsl(settings: Settings) -> StepResult:
+    """Phase 60-G: launch vLLM-embed (port 8000) and vLLM-rerank (port
+    8001) inside the Ubuntu WSL distro. Mirrors what
+    scripts/resume_code_rag.ps1 does on the scheduled-task path so the
+    dashboard Start button has parity with the cold-boot resume.
+
+    Behavior:
+      - If both endpoints already 200 on /v1/models, return OK ("already up").
+      - Otherwise launch the missing one(s) via setsid+nohup so they
+        survive the dashboard's subprocess context.
+      - Wait up to 180 s per server for /v1/models to respond.
+      - Rerank failure is best-effort (non-fatal): the cross-encoder
+        rerank step in queries will degrade to no-op if its endpoint is
+        down. Embed failure IS fatal because nothing else can run.
+    """
+    t0 = time.monotonic()
+
+    def _server_up(port: int) -> bool:
+        try:
+            r = httpx.get(f"http://localhost:{port}/v1/models", timeout=2.0)
+            return r.status_code == 200
+        except (httpx.HTTPError, OSError):
+            return False
+
+    def _launch(script_name: str) -> None:
+        # setsid + nohup + redirected fds so the server outlives the parent
+        # WSL bash session. </dev/null prevents stdin EOF kills.
+        cmd = [
+            "wsl.exe", "-d", "Ubuntu", "-e", "bash", "-c",
+            f"setsid nohup bash $HOME/bin/{script_name} "
+            f"> /tmp/{script_name}.log 2>&1 < /dev/null &",
+        ]
+        subprocess.Popen(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, creationflags=_CREATE_NO_WINDOW,
+            close_fds=True,
+        )
+
+    def _wait_for(port: int, timeout_s: float = 180.0) -> bool:
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if _server_up(port):
+                return True
+            time.sleep(2.0)
+        return False
+
+    # Audit fix: SEQUENTIAL launch (embed → wait until UP → rerank). Original
+    # draft launched both in parallel; their CUDA-graph-capture VRAM spikes
+    # overlap and embed (which requests more) crashes with "Free memory <
+    # desired GPU memory utilization" because rerank already snatched its
+    # share. Sequential start guarantees each server sees the full free
+    # VRAM at its mem-util computation time.
+    embed_already_up = _server_up(8000)
+    if not embed_already_up:
+        try:
+            _launch("serve-qwen3-embed-8b.sh")
+        except Exception as e:
+            return StepResult(
+                "start_vllm_in_wsl", False,
+                f"failed to launch embed via wsl.exe: {e}",
+                (time.monotonic() - t0) * 1000,
+            )
+
+    if not _wait_for(8000):
+        return StepResult(
+            "start_vllm_in_wsl", False,
+            "vLLM-embed never came up on :8000 within 180s. Check "
+            "/tmp/vllm-embed.log inside WSL.",
+            (time.monotonic() - t0) * 1000,
+        )
+
+    # Now embed is settled — launch rerank (best-effort).
+    rerank_already_up = _server_up(8001)
+    if not rerank_already_up:
+        try:
+            _launch("serve-rerank-bge-m3.sh")
+        except Exception:
+            # Don't fail the whole start on rerank launch issues.
+            pass
+
+    rerank_up = _wait_for(8001, timeout_s=60.0)  # short wait — best-effort
+    detail = (
+        "vLLM-embed up on :8000"
+        + (" (already running)" if embed_already_up else " (launched)")
+        + "; vLLM-rerank "
+        + ("up on :8001" if rerank_up else "DOWN (degraded; rerank will no-op)")
+    )
+    return StepResult(
+        "start_vllm_in_wsl", True, detail,
+        (time.monotonic() - t0) * 1000,
+    )
 
 
 def start_lms_server(settings: Settings) -> StepResult:
@@ -813,10 +918,17 @@ def _kill_vllm_in_wsl() -> StepResult:
         # pkill -f matches against the full command line — `vllm serve` is
         # distinctive enough that we won't accidentally kill other Python
         # processes. SIGTERM first, then SIGKILL on stragglers.
+        # Audit fix: also reap `VLLM::EngineCore` worker processes. vLLM
+        # multiprocessing renames its workers, so they don't match
+        # `vllm serve` — they survive a naive pkill and keep holding ~7-21
+        # GB VRAM. `EngineCore` matches them by their renamed argv[0].
         cmd = [
             "wsl.exe", "-d", "Ubuntu", "-e", "bash", "-c",
-            "pkill -TERM -f 'vllm serve' 2>/dev/null; sleep 1; "
+            "pkill -TERM -f 'vllm serve' 2>/dev/null; "
+            "pkill -TERM -f 'EngineCore' 2>/dev/null; "
+            "sleep 1; "
             "pkill -KILL -f 'vllm serve' 2>/dev/null; "
+            "pkill -KILL -f 'EngineCore' 2>/dev/null; "
             "echo done",
         ]
         proc = subprocess.run(

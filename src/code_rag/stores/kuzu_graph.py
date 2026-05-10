@@ -246,6 +246,38 @@ class KuzuGraphStore(GraphStore):
             self._run("MATCH (:Symbol)-[r {src_path: $p}]->(:Symbol) DELETE r", {"p": path})
             self._run("MATCH (s:Symbol {path: $p}) DETACH DELETE s", {"p": path})
 
+    def replace_for_path(
+        self, path: str, symbols: Sequence[SymbolRef], edges: Sequence[Edge],
+    ) -> None:
+        """Phase 60-F audit fix: atomic delete-by-path + upsert under a single
+        RLock acquisition. Without this, the indexer's split (delete inside
+        asyncio lock, commit outside) lets two workers interleave on the same
+        path: A.delete → B.delete → A.commit → B.commit can leave A's stale
+        rows behind because B's delete preceded A's upsert. Doing both under
+        the kuzu RLock guarantees per-path atomicity even when the asyncio
+        writer lock is released between them.
+        """
+        with self._lock:
+            # Same delete behavior as `delete_by_path`, inlined so we don't
+            # release+reacquire the RLock.
+            self._run(
+                "MATCH (:Symbol)-[r {src_path: $p}]->(:Symbol) DELETE r",
+                {"p": path},
+            )
+            self._run(
+                "MATCH (s:Symbol {path: $p}) DETACH DELETE s",
+                {"p": path},
+            )
+            # Now upsert. If both lists are empty, no-op; commit early.
+            if not symbols and not edges:
+                return
+            # Inline the upsert work (without re-acquiring RLock) — call
+            # internal helpers that don't take the lock again. The public
+            # upsert_symbols / upsert_edges acquire `with self._lock` which
+            # is fine because RLock is reentrant, but we keep this simple.
+            self.upsert_symbols(symbols)
+            self.upsert_edges(edges)
+
     # ---- reads --------------------------------------------------------------
 
     def callers_of(self, symbol: str, path: str | None = None) -> list[SymbolRef]:

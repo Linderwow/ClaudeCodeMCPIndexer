@@ -118,33 +118,62 @@ async def _run() -> int:
             log.info("autostart.bail.stop_marker_in_session")
             return
 
-    # 2) Ensure LM Studio is up with the embedder loaded.
-    # Pre-load any auxiliary chat/rerank models so the first MCP query after
-    # boot doesn't pay a 5-10s JIT-load penalty.
+    # 2) Ensure the embedder server is up.
     #
-    # Phase 29: cross_encoder reranker doesn't go through LM Studio at all
-    # (it's loaded by sentence-transformers in-process). Skip those.
-    extra: tuple[str, ...] = ()
-    rer = settings.reranker
-    if rer.kind in ("lm_studio", "lm_chat") and rer.model:
-        extra = (*extra, rer.model)
-    hyde_model = getattr(settings.embedder, "hyde_model", None)
-    if hyde_model and hyde_model not in extra:
-        extra = (*extra, str(hyde_model))
-    result = await asyncio.to_thread(
-        ensure_lm_studio_ready,
-        settings.embedder.base_url,
-        settings.embedder.model,
-        extra,
-    )
-    for s in result.steps:
-        _plain_log(autostart_log, f"lms: {s}")
-    if not result.ok:
-        _plain_log(autostart_log, f"lms FAILED: {result.error}")
-        log.error("autostart.lm_studio_failed", error=result.error)
-        # Don't exit — the watcher can still run (it just won't reindex on changes
-        # until LM Studio comes up, which might happen manually). Log and proceed.
-        _plain_log(autostart_log, "continuing without LM Studio; watcher will retry on each event")
+    # Phase 60: skip the LM Studio bring-up path entirely when the configured
+    # embedder is vLLM (port 8000). vLLM is launched by a separate scheduled
+    # task (`code-rag-resume-10pm`) that runs `scripts/resume_code_rag.ps1`
+    # — invoking ensure_lm_studio_ready() against vLLM's URL just produces
+    # log noise from `lms server start` failures, since LM Studio isn't
+    # installed and even if it were, it can't load a vLLM-served model.
+    from urllib.parse import urlparse
+    base_url = settings.embedder.base_url
+    try:
+        is_vllm = urlparse(base_url).port == 8000
+    except (ValueError, AttributeError):
+        is_vllm = False
+
+    if is_vllm:
+        # Just probe — don't try to start anything. The watcher can run
+        # whether vLLM is up or not (events will retry).
+        try:
+            from code_rag.lms_ctl import server_is_up
+            up = server_is_up(base_url, timeout_s=2.0)
+        except Exception:
+            up = False
+        _plain_log(
+            autostart_log,
+            f"vllm probe: {'up' if up else 'down'} at {base_url} "
+            "(launched separately via scripts/resume_code_rag.ps1)"
+        )
+    else:
+        # Legacy LM Studio path (kind="lm_studio" pointing at :1234, etc.).
+        # Pre-load any auxiliary chat/rerank models so the first MCP query
+        # after boot doesn't pay a 5-10s JIT-load penalty.
+        # Phase 29: cross_encoder reranker doesn't go through LM Studio at all
+        # (it's loaded by sentence-transformers in-process). Skip those.
+        extra: tuple[str, ...] = ()
+        rer = settings.reranker
+        if rer.kind in ("lm_studio", "lm_chat") and rer.model:
+            extra = (*extra, rer.model)
+        hyde_model = getattr(settings.embedder, "hyde_model", None)
+        if hyde_model and hyde_model not in extra:
+            extra = (*extra, str(hyde_model))
+        result = await asyncio.to_thread(
+            ensure_lm_studio_ready,
+            settings.embedder.base_url,
+            settings.embedder.model,
+            extra,
+        )
+        for s in result.steps:
+            _plain_log(autostart_log, f"lms: {s}")
+        if not result.ok:
+            _plain_log(autostart_log, f"lms FAILED: {result.error}")
+            log.error("autostart.lm_studio_failed", error=result.error)
+            # Don't exit — the watcher can still run (it just won't reindex
+            # on changes until LM Studio comes up, which might happen
+            # manually). Log and proceed.
+            _plain_log(autostart_log, "continuing without LM Studio; watcher will retry on each event")
 
     # 3) Open stores and launch the watcher. The watcher will catch up on any
     #    changes that happened while the machine was off.

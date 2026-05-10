@@ -30,16 +30,58 @@ Log "=== Phase 60 resume start ==="
 Log "log: $log"
 
 # ----- 1. Launch vLLM-embed inside WSL ---------------------------------------
+# Audit fix: after each wsl.exe call, poll for the log file's existence
+# inside WSL. If wsl.exe bounces (Task Scheduler context can return without
+# actually dispatching the WSL job), the bash redirect never fires and the
+# log is missing. Detecting this in 10s saves us from the 180s /v1/models
+# timeout downstream.
+function LaunchAndConfirm($script_name, $log_path_in_wsl) {
+    & wsl.exe -d Ubuntu -e bash -c "rm -f $log_path_in_wsl; setsid nohup bash `$HOME/bin/$script_name > $log_path_in_wsl 2>&1 < /dev/null &"
+    for ($j = 0; $j -lt 10; $j++) {
+        $exists = & wsl.exe -d Ubuntu -e bash -c "test -f $log_path_in_wsl && echo OK"
+        if ($exists -match 'OK') { return $true }
+        Start-Sleep -Seconds 1
+    }
+    return $false
+}
+
 Log "launching vLLM-embed (port 8000)..."
-$embedCmd = "setsid nohup bash `$HOME/bin/serve-qwen3-embed-8b.sh > /tmp/vllm-embed.log 2>&1 < /dev/null &"
-& wsl.exe -d Ubuntu --user linderwow -e bash -c $embedCmd
-Log "  embed launched"
+if (LaunchAndConfirm 'serve-qwen3-embed-8b.sh' '/tmp/vllm-embed.log') {
+    Log "  embed launched (log file present in WSL)"
+} else {
+    Log "FATAL: wsl.exe didn't dispatch vLLM-embed launch -- log file never created. Bailing."
+    exit 2
+}
+
+# Audit fix: SEQUENTIAL launch. Original draft launched embed + rerank in
+# parallel — both processes computed --gpu-memory-utilization fractions
+# from the SAME free-VRAM number, but their actual peak loads (CUDA graph
+# capture spikes) overlap and one (usually embed, which loads later but
+# requests more) crashes with "Free memory ... less than desired GPU memory
+# utilization". Waiting for embed to be /v1/models-200 means rerank only
+# starts loading once embed has settled into its steady-state VRAM
+# footprint, which is what the per-server mem-util calculation actually
+# expects.
+Log "waiting for vLLM-embed to settle BEFORE launching rerank (avoid VRAM-contention crash)..."
+$earlyEmbedUp = $false
+for ($k = 0; $k -lt 36; $k++) {
+    try {
+        $r = Invoke-WebRequest -Uri "http://localhost:8000/v1/models" -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
+        if ($r.StatusCode -eq 200) { $earlyEmbedUp = $true; Log "  embed settled after $($k*5)s, launching rerank now"; break }
+    } catch { }
+    Start-Sleep -Seconds 5
+}
+if (-not $earlyEmbedUp) {
+    Log "WARN: embed not up after 180s during pre-rerank wait; launching rerank anyway"
+}
 
 # ----- 2. Launch vLLM-rerank inside WSL --------------------------------------
 Log "launching vLLM-rerank (port 8001)..."
-$rerankCmd = "setsid nohup bash `$HOME/bin/serve-rerank-bge-m3.sh > /tmp/vllm-rerank.log 2>&1 < /dev/null &"
-& wsl.exe -d Ubuntu --user linderwow -e bash -c $rerankCmd
-Log "  rerank launched"
+if (LaunchAndConfirm 'serve-rerank-bge-m3.sh' '/tmp/vllm-rerank.log') {
+    Log "  rerank launched (log file present in WSL)"
+} else {
+    Log "WARN: rerank launch undetectable in 10s; continuing (rerank is best-effort)"
+}
 
 # ----- 3. Poll until both endpoints respond (max 180 s each) -----------------
 function WaitForPort($port, $name) {

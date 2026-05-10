@@ -575,14 +575,10 @@ class Indexer:
                     stats.errors.append(f"lex_delete:{rel}:{e}")
                     lex_ok = False
                 st.lex_delete_s += time.perf_counter() - _t
-            if self._graph is not None:
-                _t = time.perf_counter()
-                try:
-                    self._graph.delete_by_path(rel)  # type: ignore[attr-defined]
-                except Exception as e:
-                    stats.errors.append(f"graph_delete:{rel}:{e}")
-                    graph_ok = False
-                st.graph_delete_s += time.perf_counter() - _t
+            # Phase 60-F audit fix: graph delete moved OUT of the asyncio
+            # lock. It now runs paired-atomically with the commit below
+            # (under kuzu's RLock) so two workers reindexing the same path
+            # can't interleave delete/commit and leave stale rows behind.
 
             _t = time.perf_counter()
             try:
@@ -599,20 +595,47 @@ class Indexer:
                     stats.errors.append(f"lex_upsert:{rel}:{e}")
                     lex_ok = False
                 st.lex_upsert_s += time.perf_counter() - _t
-            if self._graph is not None and graph_payload is not None:
-                _t = time.perf_counter()
-                try:
-                    # Phase 60-D: just commit the pre-extracted symbols/edges
-                    # — fast DB-only writes inside the lock.
-                    self._graph.commit(*graph_payload)  # type: ignore[attr-defined]
-                except Exception as e:
-                    stats.errors.append(f"graph_upsert:{rel}:{e}")
-                    graph_ok = False
-                st.graph_commit_s += time.perf_counter() - _t
-            elif self._graph is not None and graph_payload is None:
+            # Phase 60-F: graph commit moved OUTSIDE the asyncio lock (see
+            # block immediately after this `async with` exit). Removing it
+            # from here lets the lock release after only the fast chroma+lex
+            # work, so the next worker can enter while this worker's slow
+            # kuzu commit runs in parallel under the kuzu store's own
+            # threading.RLock.
+            if self._graph is not None and graph_payload is None:
                 # Parse failed earlier; mark the file as graph-incomplete so
                 # the hash isn't stamped (next pass will retry).
                 graph_ok = False
+
+        # Phase 60-F + audit fix: atomic graph delete+commit OUTSIDE the
+        # asyncio lock. The pre-Phase-60-F code held the asyncio lock for
+        # ~1.5 s per file during graph commit, blocking all other workers
+        # from doing their fast chroma+lex writes. With this moved out,
+        # parallel workers' chroma+lex runs interleave while their graph
+        # writes serialize at the kuzu level via KuzuGraphStore._lock
+        # (threading.RLock).
+        #
+        # Audit fix: previous Phase 60-F draft put delete inside the asyncio
+        # lock + commit outside, which broke per-path atomicity (Worker A's
+        # delete + Worker B's delete + A's commit + B's commit could leave
+        # A's stale rows in the graph). `replace_for_path` does delete +
+        # upsert under one RLock acquisition, restoring atomicity.
+        if self._graph is not None and graph_payload is not None:
+            _t = time.perf_counter()
+            try:
+                self._graph.replace_for_path(  # type: ignore[attr-defined]
+                    rel, graph_payload[0], graph_payload[1],
+                )
+            except Exception as e:
+                stats.errors.append(f"graph_upsert:{rel}:{e}")
+                graph_ok = False
+            st.graph_commit_s += time.perf_counter() - _t
+        elif self._graph is not None and graph_payload is None:
+            # Parse failed but we still need to scrub the path's old graph
+            # rows so they don't linger as stale data. Best-effort.
+            try:
+                self._graph.delete_by_path(rel)  # type: ignore[attr-defined]
+            except Exception as e:
+                stats.errors.append(f"graph_delete_orphan:{rel}:{e}")
 
         # Stamp the content hash ONLY when every store accepted the write.
         # Otherwise leave the hash unchanged so the next pass retries — that
