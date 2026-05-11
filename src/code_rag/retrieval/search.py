@@ -253,8 +253,14 @@ class HybridSearcher:
         # vector-query future would orphan the lexical task and other arms
         # ("Task was destroyed but it is pending"). Wrap the awaits so any
         # raise inside one await still cancels + drains the rest.
+        # Phase 60-R: switch from embed() (raw, document path) to
+        # embed_query() so Qwen3-Embedding gets its
+        # `Instruct: ...\nQuery: ...` prefix at search time. Documents
+        # stay raw; the indexer still calls embed() unchanged. Phase 1
+        # uses the single DEFAULT instruct for every arm. Phase 2 will
+        # route per query type via select_query_instruct.
         embed_inputs = [arm_text for arm_text, _w in plan]
-        q_vec_task = asyncio.create_task(self._embed.embed(embed_inputs))
+        q_vec_task = asyncio.create_task(self._embed.embed_query(embed_inputs))
         lex_task = asyncio.create_task(
             asyncio.to_thread(self._lex.query, query, params.k_lexical),
         )
