@@ -59,6 +59,18 @@ class EmbedderConfig(BaseModel):
     # ST code embedders are trained with that assumption. Leave on unless
     # you've specifically chosen a model that wants raw vectors.
     normalize: bool = True
+    # Phase 60-R Phase 2: Qwen3-Embedding query-instruct routing mode.
+    # "auto"               -- classify each query (identifier / error /
+    #                         concept / content-type) and pick the best
+    #                         instruct. The recommended default.
+    # "content_type_only"  -- skip the classifier; only honor an explicit
+    #                         content_type filter from the request. Use to
+    #                         A/B the classifier without touching ingest.
+    # "off"                -- never route. Every query gets the DEFAULT
+    #                         instruct via format_query. Use as a Phase 1
+    #                         baseline (still applies the prefix, just
+    #                         doesn't pick which one).
+    query_instruct_mode: Literal["auto", "content_type_only", "off"] = "auto"
 
 
 class RerankerConfig(BaseModel):

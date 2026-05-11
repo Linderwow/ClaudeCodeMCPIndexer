@@ -380,6 +380,12 @@ class ServerResources:
             rewriter=self.rewriter,
             decomposer=self.decomposer,
             reflector=self.reflector,
+            # Phase 60-R Phase 2: thread the Qwen3 query-instruct mode
+            # from settings so the MCP search path honors the operator's
+            # routing choice ("auto" / "content_type_only" / "off").
+            query_instruct_mode=getattr(
+                self.settings.embedder, "query_instruct_mode", "auto",
+            ),
         )
         log.info("mcp.resources.open",
                  embedder=self.embedder.model, dim=self.embedder.dim,

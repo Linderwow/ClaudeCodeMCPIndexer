@@ -169,6 +169,7 @@ class HybridSearcher:
         rewriter: object | None = None,   # LMStudioQueryRewriter, optional
         decomposer: object | None = None, # Phase 37-A LMStudioQueryDecomposer
         reflector: object | None = None,  # Phase 37-B LMStudioReflector
+        query_instruct_mode: str = "auto",  # Phase 60-R Phase 2
     ) -> None:
         self._embed = embedder
         self._vec = vector_store
@@ -193,6 +194,12 @@ class HybridSearcher:
         # each chunk answers the query. Confidence-gated (skipped when
         # cross-encoder top-1 is already strong).
         self._reflector = reflector
+        # Phase 60-R Phase 2: query-instruct routing mode for Qwen3-
+        # Embedding's asymmetric prefix. "auto" classifies and picks the
+        # best instruct; "content_type_only" ignores classifiers; "off"
+        # disables routing (every query gets DEFAULT). Phase 1 baseline
+        # corresponds to "off".
+        self._query_instruct_mode = query_instruct_mode
 
     async def search(self, query: str, params: SearchParams) -> list[SearchHit]:
         """Back-compat entry point. Returns a bare list.
@@ -263,11 +270,53 @@ class HybridSearcher:
         # Phase 60-R: switch from embed() (raw, document path) to
         # embed_query() so Qwen3-Embedding gets its
         # `Instruct: ...\nQuery: ...` prefix at search time. Documents
-        # stay raw; the indexer still calls embed() unchanged. Phase 1
-        # uses the single DEFAULT instruct for every arm. Phase 2 will
-        # route per query type via select_query_instruct.
+        # stay raw; the indexer still calls embed() unchanged.
+        #
+        # Phase 2: pick the BEST instruct for THIS query's shape. We
+        # classify the original literal query (not the rewriter/HyDE
+        # arms) -- all arms then receive the same routed instruct since
+        # they all derive from the same user intent. Mode is plumbed
+        # from settings.embedder.query_instruct_mode via the searcher's
+        # constructor; "off" reverts to the Phase 1 DEFAULT-for-every-
+        # query baseline for A/B comparison.
+        from code_rag.embedders.prompts import select_query_instruct
+        from code_rag.retrieval.query_classify import (
+            is_concept_query,
+            is_error_query,
+            is_identifier_query,
+        )
+        # SearchParams.language is the closest existing analog to the
+        # spec's `content_type_filter`. Map common code-language values
+        # to the CONTENT_TYPE_INSTRUCT keys: anything that's a recognized
+        # code language collapses to "code"; pass through doc/config
+        # values directly.
+        content_type_filter: str | None = None
+        if params.language:
+            lang = params.language.lower()
+            if lang in ("yaml", "json", "markdown", "openapi"):
+                content_type_filter = lang
+            else:
+                # python, c_sharp, typescript, javascript, tsx, etc.
+                content_type_filter = "code"
+        routed_instruct = select_query_instruct(
+            content_type_filter=content_type_filter,
+            is_identifier_query=is_identifier_query(query),
+            is_error_query=is_error_query(query),
+            is_concept_query=is_concept_query(query),
+            mode=self._query_instruct_mode,
+        )
+        log.debug(
+            "search.query_instruct_routed",
+            mode=self._query_instruct_mode,
+            content_type_filter=content_type_filter,
+            instruct_picked=("DEFAULT" if routed_instruct is None
+                             else routed_instruct[:60] + "..."),
+            source="auto",
+        )
         embed_inputs = [arm_text for arm_text, _w in plan]
-        q_vec_task = asyncio.create_task(self._embed.embed_query(embed_inputs))
+        q_vec_task = asyncio.create_task(
+            self._embed.embed_query(embed_inputs, instruct=routed_instruct),
+        )
         lex_task = asyncio.create_task(
             asyncio.to_thread(self._lex.query, query, params.k_lexical),
         )
