@@ -464,6 +464,17 @@ async def _run() -> int:
         _catchup_start = _t.time()
         # Heartbeat task: poll vec.count() every 30 s and log progress so
         # a stuck catch-up reveals itself rather than going silent.
+        #
+        # Phase 60-Q (root-cause fix for the silent "crashes"): ALSO touch
+        # data/watcher.heartbeat from this loop. code-rag-reap fires every
+        # 10 min and KILLS any watcher whose heartbeat file is >120 s old.
+        # The watcher's normal heartbeat-writer runs INSIDE watch_forever()
+        # which only starts AFTER catch-up completes. On a fresh 90 k-chunk
+        # corpus catch-up takes ~25 min -- which means reap killed every
+        # bootstrap at T+120 s, indefinitely. Writing the heartbeat from
+        # the catch-up loop too keeps the reaper from murdering an
+        # in-progress recovery.
+        _hb_file = settings.paths.data_dir / "watcher.heartbeat"
         _stop_hb = asyncio.Event()
         async def _heartbeat() -> None:
             last_count = -1
@@ -479,6 +490,13 @@ async def _run() -> int:
                     _plain_log(autostart_log,
                                f"  catch-up heartbeat t+{int(elapsed)}s: vectors={cur}")
                     last_count = cur
+                # Phase 60-Q: keep watcher.heartbeat fresh so the reaper
+                # doesn't kill us mid-catch-up. Best-effort; never raises.
+                try:
+                    _hb_file.write_text(str(int(_t.time())), encoding="utf-8")
+                except OSError as e:
+                    _plain_log(autostart_log,
+                               f"  WARN: watcher.heartbeat write failed: {e}")
                 try:
                     await asyncio.wait_for(_stop_hb.wait(), timeout=30.0)
                 except asyncio.TimeoutError:
