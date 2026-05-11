@@ -320,17 +320,90 @@ async def _run() -> int:
             _plain_log(
                 autostart_log,
                 f"WIPE DETECTED: chroma=0 vectors but fts={fts_count} chunks "
-                f"and file_hashes={hash_count} entries. Clearing file_hashes "
-                "to force a full re-vectorize via the catch-up loop below."
+                f"and file_hashes={hash_count} entries."
             )
-            try:
-                cleared = hashes.clear_all()
+            # Phase 60-P: chroma snapshot restore. Re-vectorizing 90k chunks
+            # takes ~30 min (and frequently silent-crashes mid-reindex).
+            # Instead, restore from the last-known-good snapshot we wrote
+            # after the previous clean catch-up. If restore succeeds we
+            # skip the clear_all path entirely -- catch-up sees a populated
+            # chroma + matching file_hashes and is a no-op.
+            #
+            # The snapshot lives at data/chroma.bak/ (full dir copy, not
+            # just sqlite -- HNSW segment files matter for retrieval).
+            chroma_dir = settings.paths.data_dir / "chroma"
+            chroma_bak = settings.paths.data_dir / "chroma.bak"
+            restored = False
+            if chroma_bak.exists():
+                bak_age_h = (
+                    (datetime.now(UTC).timestamp() - chroma_bak.stat().st_mtime)
+                    / 3600.0
+                )
                 _plain_log(
                     autostart_log,
-                    f"  cleared {cleared} file_hash entries; catch-up will re-embed everything"
+                    f"  found snapshot at chroma.bak (age {bak_age_h:.1f} h); "
+                    "attempting restore..."
                 )
-                log.warning("autostart.chroma_wipe_detected",
-                            fts=fts_count, file_hashes_cleared=cleared)
+                try:
+                    # Close chroma so file locks release.
+                    with contextlib.suppress(Exception):
+                        vec.close()
+                    import shutil as _sh
+                    # Move corrupt chroma out of the way (not delete -- preserve
+                    # for post-mortem) and copy the snapshot in.
+                    corrupt_dir = settings.paths.data_dir / (
+                        f"chroma.corrupt.{int(datetime.now(UTC).timestamp())}"
+                    )
+                    if chroma_dir.exists():
+                        _sh.move(str(chroma_dir), str(corrupt_dir))
+                    _sh.copytree(str(chroma_bak), str(chroma_dir))
+                    # Re-open chroma to verify the snapshot is healthy.
+                    vec.open(meta)
+                    restored_count = vec.count()
+                    _plain_log(
+                        autostart_log,
+                        f"  RESTORE OK: chroma now has {restored_count} vectors "
+                        f"(was 0). Corrupt copy preserved at {corrupt_dir.name}."
+                    )
+                    log.warning("autostart.chroma_restored_from_snapshot",
+                                vectors=restored_count, age_h=bak_age_h)
+                    restored = True
+                except Exception as re:
+                    _plain_log(
+                        autostart_log,
+                        f"  RESTORE FAILED: {type(re).__name__}: {re}. "
+                        "Falling through to clear-hashes + full re-vectorize."
+                    )
+            else:
+                _plain_log(
+                    autostart_log,
+                    "  no chroma.bak snapshot present; falling through to "
+                    "clear-hashes + full re-vectorize (this is normal on the "
+                    "first wipe after Phase 60-P deploy)."
+                )
+
+            if restored:
+                # Don't clear hashes -- chroma now matches them.
+                _plain_log(autostart_log,
+                           "  skipping clear_all (snapshot restore covered it)")
+            else:
+                _plain_log(
+                    autostart_log,
+                    "  Clearing file_hashes to force full re-vectorize."
+                )
+                cleared = 0
+                try:
+                    cleared = hashes.clear_all()
+                    _plain_log(
+                        autostart_log,
+                        f"  cleared {cleared} file_hash entries; catch-up will re-embed everything"
+                    )
+                    log.warning("autostart.chroma_wipe_detected",
+                                fts=fts_count, file_hashes_cleared=cleared)
+                except Exception as e:
+                    _plain_log(autostart_log,
+                               f"WARN: file_hashes.clear_all failed: {e} — "
+                               "catch-up will be a no-op until file_hashes is wiped manually")
                 # Phase 60-M: write a sticky marker the dashboard can read.
                 # Without this, the dashboard's wipe_recovery state classifier
                 # races: vectors transitions 0 -> N+ within the first poll
@@ -351,10 +424,6 @@ async def _run() -> int:
                 except Exception as me:
                     _plain_log(autostart_log,
                                f"  WARN: could not write wipe_recovery marker: {me}")
-            except Exception as e:
-                _plain_log(autostart_log,
-                           f"WARN: file_hashes.clear_all failed: {e} — "
-                           "catch-up will be a no-op until file_hashes is wiped manually")
 
         # Phase 35: graph ingestion is SKIPPED during the catch-up reindex.
         #
@@ -384,12 +453,93 @@ async def _run() -> int:
             file_hashes=hashes,
         )
 
+        # Phase 60-P: explicit start/done logging + heartbeat. Previous
+        # silent crashes (today: bootstraps at 12:48, 12:54, 13:04, 13:15
+        # all opened chroma then VANISHED without ever logging "catch-up
+        # reindex done") left no trail to debug. We now log start + finish
+        # + every 30 s of progress as a heartbeat. If autostart.log stops
+        # midway, the last heartbeat tells us how far the catch-up got.
+        import time as _t
+        _plain_log(autostart_log, "catch-up reindex starting (graph skipped)")
+        _catchup_start = _t.time()
+        # Heartbeat task: poll vec.count() every 30 s and log progress so
+        # a stuck catch-up reveals itself rather than going silent.
+        _stop_hb = asyncio.Event()
+        async def _heartbeat() -> None:
+            last_count = -1
+            while not _stop_hb.is_set():
+                try:
+                    cur = vec.count()
+                except Exception as e:
+                    _plain_log(autostart_log,
+                               f"  catch-up heartbeat: vec.count failed: {e}")
+                    cur = -1
+                elapsed = _t.time() - _catchup_start
+                if cur != last_count:
+                    _plain_log(autostart_log,
+                               f"  catch-up heartbeat t+{int(elapsed)}s: vectors={cur}")
+                    last_count = cur
+                try:
+                    await asyncio.wait_for(_stop_hb.wait(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    pass
+        hb_task = asyncio.create_task(_heartbeat(), name="catchup_heartbeat")
         try:
             await indexer_for_catchup.reindex_all()
-            _plain_log(autostart_log, "catch-up reindex done (graph skipped — incremental)")
+            elapsed = _t.time() - _catchup_start
+            try:
+                final_count = vec.count()
+            except Exception:
+                final_count = -1
+            _plain_log(
+                autostart_log,
+                f"catch-up reindex done (graph skipped — incremental) "
+                f"after {elapsed:.1f}s, vectors={final_count}"
+            )
+            # Phase 60-P: snapshot chroma to data/chroma.bak/ for fast
+            # recovery on next wipe. Only when catch-up actually populated
+            # things (>1000 vectors -- empty backups would clobber a real
+            # snapshot if the recovery itself crashed mid-reindex).
+            if final_count > 1000:
+                try:
+                    chroma_dir = settings.paths.data_dir / "chroma"
+                    chroma_bak = settings.paths.data_dir / "chroma.bak"
+                    chroma_bak_tmp = settings.paths.data_dir / "chroma.bak.tmp"
+                    if chroma_dir.exists():
+                        import shutil as _sh
+                        # Close-and-reopen avoidance: read-only copy is OK
+                        # for chroma sqlite while it's open under WAL.
+                        # Write to .tmp then atomic rename so we never have
+                        # a half-written .bak the next wipe-detector reads.
+                        if chroma_bak_tmp.exists():
+                            _sh.rmtree(chroma_bak_tmp, ignore_errors=True)
+                        _sh.copytree(str(chroma_dir), str(chroma_bak_tmp))
+                        # Atomic swap: remove old .bak, rename .tmp -> .bak.
+                        if chroma_bak.exists():
+                            _sh.rmtree(chroma_bak, ignore_errors=True)
+                        chroma_bak_tmp.rename(chroma_bak)
+                        _plain_log(
+                            autostart_log,
+                            f"  chroma snapshot written to {chroma_bak.name} "
+                            f"({final_count} vectors)"
+                        )
+                except Exception as se:
+                    _plain_log(
+                        autostart_log,
+                        f"  WARN: chroma snapshot failed (non-fatal): {se}"
+                    )
         except Exception as e:
-            _plain_log(autostart_log, f"catch-up reindex failed (non-fatal): {e}")
+            elapsed = _t.time() - _catchup_start
+            _plain_log(
+                autostart_log,
+                f"catch-up reindex FAILED after {elapsed:.1f}s "
+                f"(non-fatal): {type(e).__name__}: {e}"
+            )
             log.exception("autostart.catchup_failed")
+        finally:
+            _stop_hb.set()
+            with contextlib.suppress(BaseException):
+                await asyncio.wait_for(hb_task, timeout=2.0)
 
         # Hand off to a graph-enabled indexer for steady-state watch_forever.
         # In transient mode this is fine: per-file events incur a small
