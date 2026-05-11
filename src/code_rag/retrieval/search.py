@@ -74,7 +74,14 @@ class SearchParams:
     k_vector: int = 50         # per-list fan-out before fusion
     k_lexical: int = 50
     k_rerank_in: int = 50      # the reranker's input size (capped by available hits)
-    rrf_k: int = 60
+    # Phase 60-S (math-audit #3): k=60 is the Cormack 2009 default — derived
+    # for lists of ~1000 docs. With our k_vector=k_lexical=50, the rank-60
+    # saturation is past every list, compressing fused scores into [1/61,
+    # 1/110] — a near-flat range that under-rewards rank-1. Drop to k=15:
+    # rank-1 contribution (1/16 = 0.0625) is 5.4× rank-50 (1/65 = 0.0154)
+    # vs the old 1.83× spread (1/61 vs 1/110). Sharper top-1 signal,
+    # especially after Phase 60-O's weighted-arm fusion landed.
+    rrf_k: int = 15
 
     # ---- filters ------------------------------------------------------------
     path_glob: str | None = None

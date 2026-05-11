@@ -89,25 +89,33 @@ def boost_exact_matches(
         text_lc = (h.chunk.text or "").lower()
         sym_lc = (h.chunk.symbol or "").lower()
         path_lc = (h.chunk.path or "").lower()
-        # We match against BOTH the chunk body (semantic occurrence) AND the
-        # symbol/path (structural occurrence). A chunk whose SYMBOL is
-        # `OnBarUpdate` is more relevant for query "OnBarUpdate" than one
-        # that just mentions it inside a comment.
-        body_matches = sum(1 for t in lc_idents if t in text_lc)
-        struct_matches = sum(1 for t in lc_idents if t in sym_lc or t in path_lc)
-        # Phase 38 (audit fix): preserve struct > body weighting (a chunk
-        # whose SYMBOL is `OnBarUpdate` is more relevant than one that only
-        # mentions it in a comment), but cap at 3 to match the documented
-        # contract "+50% per matched identifier capped at 3 → max 2.5x boost"
-        # rather than the previous cap=6 that allowed up to 4x.
-        # Struct counts 2 toward the cap; body counts 1.
-        capped = min(body_matches + 2 * struct_matches, 3)
+        # Phase 60-S (math-audit #5): cap contribution PER IDENTIFIER, not
+        # in aggregate. The old `body_matches + 2*struct_matches` formula
+        # let a SINGLE identifier hitting both body and struct produce
+        # capped=3 (the same boost as three distinct matched identifiers),
+        # breaking the docstring's "+50% per matched identifier" contract.
+        # New rule: each identifier scores 1.0 (struct match — sym or path)
+        # or 0.5 (body-only match) or 0 (no match). Sum, cap at 3.0. This
+        # preserves struct > body weighting AND honors the docstring: max
+        # 2.5x boost requires either 3 struct matches OR 6 body-only matches.
+        contribution = 0.0
+        for t in lc_idents:
+            in_struct = (t in sym_lc) or (t in path_lc)
+            in_body = t in text_lc
+            if in_struct:
+                contribution += 1.0
+            elif in_body:
+                contribution += 0.5
+        capped = min(contribution, 3.0)
         if capped == 0:
             out.append(h)
             continue
         new_score = float(h.score) * (1.0 + factor * capped)
         prev = h.match_reason or ""
-        tag = f"+exact-match x{capped}"
+        # Display capped as int when it's a whole number, otherwise show
+        # the half-step (e.g. "x1.5" for one struct + one body-only).
+        cap_str = f"{int(capped)}" if capped == int(capped) else f"{capped:.1f}"
+        tag = f"+exact-match x{cap_str}"
         reason = f"{prev} | {tag}" if prev else tag
         out.append(h.model_copy(update={"score": new_score, "match_reason": reason}))
     # Re-sort by boosted score so the top of the list reflects the boost.
@@ -208,7 +216,7 @@ def mmr_diversify(
 def reciprocal_rank_fusion(
     lists: Sequence[Sequence[SearchHit]],
     *,
-    k: int = 60,
+    k: int = 15,
     top_k: int = 50,
     weights: Sequence[float] | None = None,
 ) -> list[SearchHit]:
@@ -216,8 +224,14 @@ def reciprocal_rank_fusion(
 
         score(doc) = sum_over_lists( weight_i * 1 / (k + rank_i(doc)) )
 
-    k=60 is the standard recipe. Returns hits sorted by fused score desc,
-    truncated to top_k. source='hybrid'.
+    Phase 60-S (math-audit #3): k=15 default, NOT the textbook k=60. The
+    Cormack 2009 derivation assumes lists of ~1000 docs; our retrieval
+    lists are k_vector=k_lexical=50, so k=60 puts the rank saturation
+    PAST every list and compresses fused scores into [1/61, 1/110] — a
+    near-flat range. k=15 gives rank-1 a 5.4× edge over rank-50 (vs the
+    old 1.83×), sharpening the top-1 signal that downstream rerank cares
+    about. Returns hits sorted by fused score desc, truncated to top_k.
+    source='hybrid'.
 
     Phase 60-O (audit Math#1+#2): the previous implementation summed every
     list at unit weight. With multi-arm vector retrieval (rewriter, HyDE,

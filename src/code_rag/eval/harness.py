@@ -93,6 +93,14 @@ class EvalReport:
         return self._recall_at(3)
 
     @property
+    def recall_at_5(self) -> float:
+        # Phase 60-S (math-audit #8): @5 was the missing slice. @1/@3
+        # under-report when the right doc lives at rank 4-5; @10 is too
+        # forgiving to spot regressions. @5 is where hybrid retrieval
+        # typically lives — track it explicitly.
+        return self._recall_at(5)
+
+    @property
     def recall_at_10(self) -> float:
         return self._recall_at(10)
 
@@ -174,6 +182,10 @@ class EvalReport:
                 "n":         len(results),
                 "recall@1":  round(sub.recall_at_1, 4),
                 "recall@3":  round(sub.recall_at_3, 4),
+                # Phase 60-S (math-audit #8): @5 added alongside the existing
+                # ladder; per-tag visibility for the slice where hybrid
+                # retrieval tends to settle.
+                "recall@5":  round(sub.recall_at_5, 4),
                 "recall@10": round(sub.recall_at_10, 4),
                 "mrr":       round(sub.mrr, 4),
                 "ndcg@10":   round(sub.ndcg_at_10, 4),
@@ -185,6 +197,9 @@ class EvalReport:
             "n":              len(self.cases),
             "recall@1":       round(self.recall_at_1, 4),
             "recall@3":       round(self.recall_at_3, 4),
+            # Phase 60-S (math-audit #8): the most informative slice for
+            # hybrid retrieval; was missing from both summary() and per_tag().
+            "recall@5":       round(self.recall_at_5, 4),
             "recall@10":      round(self.recall_at_10, 4),
             "mrr":            round(self.mrr, 4),
             "ndcg@10":        round(self.ndcg_at_10, 4),
@@ -214,12 +229,19 @@ class EvalReport:
         Lets a CI gate fail commits that drop quality."""
         b = baseline.summary()
         c = self.summary()
+        # Phase 60-S (math-audit #8): include recall@5. Older baseline JSON
+        # files may lack the key -- if missing on the baseline side, fall
+        # through to 0.0 so we don't crash an eval-gate run on a fresh
+        # checkout that hasn't been re-baselined yet. Concrete consequence:
+        # the FIRST eval after this lands will show a +N pp delta on
+        # recall@5 (against 0.0); re-baseline immediately to set the floor.
         return {
             "label":     f"{self.label or 'current'} vs {baseline.label or 'baseline'}",
             "n":         c["n"],
             "deltas_pp": {
-                k: round((c[k] - b[k]) * 100, 2)
-                for k in ("recall@1", "recall@3", "recall@10", "mrr", "ndcg@10")
+                k: round((c[k] - b.get(k, 0.0)) * 100, 2)
+                for k in ("recall@1", "recall@3", "recall@5", "recall@10",
+                          "mrr", "ndcg@10")
                 if k in b and k in c
             },
             "deltas_ms": {

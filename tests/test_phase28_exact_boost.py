@@ -76,10 +76,17 @@ def test_mixed_query() -> None:
 
 def test_boost_lifts_matching_chunk_above_nonmatching() -> None:
     """Chunk B has a lower base score but contains the identifier — should
-    end up ranked above A after the boost."""
+    end up ranked above A after the boost.
+
+    Phase 60-S (math-audit #5): with the corrected per-identifier cap, a
+    single matched identifier yields 1.5x boost (not 2.5x). The test's
+    base-score gap of 0.7 vs 1.0 is now bridgeable: 0.7 * 1.5 = 1.05 > 1.0.
+    The previous gap of 0.5 vs 1.0 was only winnable under the old buggy
+    cap math that gave one ident the same boost as three.
+    """
     hits = [
         _hit(1.0, "a.py", "foo",        text="totally unrelated content"),
-        _hit(0.5, "b.py", "OnBarUpdate", text="def OnBarUpdate(self): ..."),
+        _hit(0.7, "b.py", "OnBarUpdate", text="def OnBarUpdate(self): ..."),
     ]
     out = boost_exact_matches(hits, ["OnBarUpdate"], factor=0.5)
     assert out[0].chunk.path == "b.py"
