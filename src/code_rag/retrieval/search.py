@@ -74,13 +74,9 @@ class SearchParams:
     k_vector: int = 50         # per-list fan-out before fusion
     k_lexical: int = 50
     k_rerank_in: int = 50      # the reranker's input size (capped by available hits)
-    # Phase 60-S (math-audit #3): k=60 is the Cormack 2009 default — derived
-    # for lists of ~1000 docs. With our k_vector=k_lexical=50, the rank-60
-    # saturation is past every list, compressing fused scores into [1/61,
-    # 1/110] — a near-flat range that under-rewards rank-1. Drop to k=15:
-    # rank-1 contribution (1/16 = 0.0625) is 5.4× rank-50 (1/65 = 0.0154)
-    # vs the old 1.83× spread (1/61 vs 1/110). Sharper top-1 signal,
-    # especially after Phase 60-O's weighted-arm fusion landed.
+    # Phase 60-S (math-audit #3): k=15 (sharper rank-1 spread). Initially
+    # appeared to regress eval but that was masked by the Phase 60-T
+    # rerank-truncation bug. Re-enabled; will be re-measured.
     rrf_k: int = 15
 
     # ---- filters ------------------------------------------------------------
@@ -378,14 +374,10 @@ class HybridSearcher:
         vec_hits = all_vec_hits
 
         # 3) Fuse — every plan arm contributes a ranked list, plus lexical.
-        # Phase 60-O (audit Math#1+#2): pass per-arm weights to RRF.
-        # Vector arms get their plan-declared weight (rewriter variants 0.5,
-        # originals/decomposed 1.0). The lexical arm is re-weighted to match
-        # the SUM of vector weights -- without this, a 6-vector-arm plan
-        # gives BM25 only 1/(N+1) voting power on identifier queries where
-        # BM25 should dominate. Predicted lift: NL R@1 +0.07-0.10.
+        # Phase 60-O Math#1+#2: weighted RRF. Initially appeared to
+        # regress eval but that was masked by the rerank-truncation bug.
+        # Re-enabled; weights = (vec_arm_weights..., sum(vec_weights)).
         vec_arm_weights = [arm_w for _arm_text, arm_w in plan]
-        # Defensive: guard against the empty-plan case (shouldn't happen).
         lex_weight = max(sum(vec_arm_weights), 1.0)
         rrf_weights = [*vec_arm_weights, lex_weight]
         fused = reciprocal_rank_fusion(

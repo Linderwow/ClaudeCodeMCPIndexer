@@ -89,15 +89,9 @@ def boost_exact_matches(
         text_lc = (h.chunk.text or "").lower()
         sym_lc = (h.chunk.symbol or "").lower()
         path_lc = (h.chunk.path or "").lower()
-        # Phase 60-S (math-audit #5): cap contribution PER IDENTIFIER, not
-        # in aggregate. The old `body_matches + 2*struct_matches` formula
-        # let a SINGLE identifier hitting both body and struct produce
-        # capped=3 (the same boost as three distinct matched identifiers),
-        # breaking the docstring's "+50% per matched identifier" contract.
-        # New rule: each identifier scores 1.0 (struct match — sym or path)
-        # or 0.5 (body-only match) or 0 (no match). Sum, cap at 3.0. This
-        # preserves struct > body weighting AND honors the docstring: max
-        # 2.5x boost requires either 3 struct matches OR 6 body-only matches.
+        # Phase 60-S (math-audit #5): per-identifier cap. Initially
+        # appeared to regress but that was masked by rerank-truncation.
+        # Re-enabled.
         contribution = 0.0
         for t in lc_idents:
             in_struct = (t in sym_lc) or (t in path_lc)
@@ -112,8 +106,6 @@ def boost_exact_matches(
             continue
         new_score = float(h.score) * (1.0 + factor * capped)
         prev = h.match_reason or ""
-        # Display capped as int when it's a whole number, otherwise show
-        # the half-step (e.g. "x1.5" for one struct + one body-only).
         cap_str = f"{int(capped)}" if capped == int(capped) else f"{capped:.1f}"
         tag = f"+exact-match x{cap_str}"
         reason = f"{prev} | {tag}" if prev else tag
@@ -224,13 +216,8 @@ def reciprocal_rank_fusion(
 
         score(doc) = sum_over_lists( weight_i * 1 / (k + rank_i(doc)) )
 
-    Phase 60-S (math-audit #3): k=15 default, NOT the textbook k=60. The
-    Cormack 2009 derivation assumes lists of ~1000 docs; our retrieval
-    lists are k_vector=k_lexical=50, so k=60 puts the rank saturation
-    PAST every list and compresses fused scores into [1/61, 1/110] — a
-    near-flat range. k=15 gives rank-1 a 5.4× edge over rank-50 (vs the
-    old 1.83×), sharpening the top-1 signal that downstream rerank cares
-    about. Returns hits sorted by fused score desc, truncated to top_k.
+    Phase 60-S (math-audit #3): k=15 default for our 50-item lists.
+    Returns hits sorted by fused score desc, truncated to top_k.
     source='hybrid'.
 
     Phase 60-O (audit Math#1+#2): the previous implementation summed every
