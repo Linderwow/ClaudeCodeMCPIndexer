@@ -135,8 +135,14 @@ def _proc(pid: int, ppid: int, kind: str | None, cmdline: str = "") -> ProcessIn
 
 
 def test_orphan_when_ppid_is_dead() -> None:
-    """An MCP process whose parent PID is no longer alive = orphan."""
-    procs = [_proc(pid=1001, ppid=2**30, kind="mcp")]  # 2^30 = unlikely-alive
+    """A watcher process whose parent PID is no longer alive = orphan.
+
+    Phase 60-U: was originally `kind="mcp"`; switched to `kind="watcher"`
+    because MCP is now exempt from orphan classification (it has its own
+    parent-death watchdog as the authority). The orphan-walk semantics
+    being tested still apply to every other kind.
+    """
+    procs = [_proc(pid=1001, ppid=2**30, kind="watcher")]  # 2^30 = unlikely-alive
     with patch("code_rag.util.proc_hygiene._process_name", return_value=""):
         out = classify_orphans(procs)
     assert out[0].is_orphan is True
@@ -192,9 +198,15 @@ def test_orphan_walks_through_intermediate_code_rag_stub() -> None:
 
 
 def test_reap_dry_run_no_kill() -> None:
-    """`kill=False` returns the same report but never invokes kill_pid."""
+    """`kill=False` returns the same report but never invokes kill_pid.
+
+    Phase 60-U: switched fixture kind from "mcp" to "watcher" — MCP is
+    now reap-exempt (parent-death watchdog is the authority), so an
+    "mcp"-kinded orphan fixture would no longer be classified as orphan
+    and the report-shape assertion would break for unrelated reasons.
+    """
     fake_procs = [
-        _proc(pid=1001, ppid=2**30, kind="mcp"),  # orphan
+        _proc(pid=1001, ppid=2**30, kind="watcher"),  # orphan
     ]
     with patch("code_rag.util.proc_hygiene.list_code_rag_processes",
                return_value=fake_procs), \
@@ -209,15 +221,21 @@ def test_reap_dry_run_no_kill() -> None:
     # The orphan dict has the required shape.
     o = report["orphans"][0]
     assert o["pid"] == 1001
-    assert o["kind"] == "mcp"
+    assert o["kind"] == "watcher"
     assert o["is_orphan"] is True
 
 
 def test_reap_kills_only_orphans() -> None:
-    """Live processes are NEVER killed even with kill=True."""
+    """Live processes are NEVER killed even with kill=True.
+
+    Phase 60-U: switched fixture kind from "mcp" to "watcher" — see
+    notes on the test above. The semantics being tested (kill orphans,
+    leave alive ones) are identical across kinds; only MCP is exempt
+    from the orphan classification step itself.
+    """
     procs = [
-        _proc(pid=1001, ppid=os.getpid(), kind="mcp"),     # legitimate
-        _proc(pid=1002, ppid=2**30, kind="mcp"),           # orphan
+        _proc(pid=1001, ppid=os.getpid(), kind="watcher"),  # legitimate
+        _proc(pid=1002, ppid=2**30, kind="watcher"),        # orphan
     ]
     killed: list[int] = []
 
@@ -225,10 +243,13 @@ def test_reap_kills_only_orphans() -> None:
         killed.append(pid)
         return True
 
+    # Phase 60-U: fixture uses kind="watcher" now, so expected ancestor
+    # is svchost.exe / taskeng.exe / explorer.exe (Task Scheduler), not
+    # claude.exe.
     with patch("code_rag.util.proc_hygiene.list_code_rag_processes",
                return_value=procs), \
          patch("code_rag.util.proc_hygiene._process_name",
-               return_value="claude.exe"), \
+               return_value="svchost.exe"), \
          patch("code_rag.util.proc_hygiene.kill_pid", side_effect=fake_kill):
         report = reap_orphans(kill=True)
     assert killed == [1002]

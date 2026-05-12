@@ -442,6 +442,22 @@ def classify_orphans(procs: list[ProcessInfo]) -> list[ProcessInfo]:
       * Hit System / Idle (PID 0/4) → orphan (chain reached top without match)
       * Hit our own .venv launcher stub → keep walking (it's our intermediate)
 
+    Phase 60-U: MCP processes are NEVER classified as orphans by this
+    function. Two reasons:
+      1. Each MCP server runs its own `start_parent_death_watchdog`
+         (proc_hygiene.py top) that polls os.getppid() every 10 s and
+         self-exits when claude.exe goes away. That is the canonical
+         "MCP should die now" authority.
+      2. The ancestor-name match is brittle for MCP. Claude Code spawns
+         MCP through node-mediated venv-stub chains; the stub exits
+         fast and the python child gets reparented to System (PID 4),
+         which makes our ancestor walk falsely flag a LIVE healthy MCP
+         as orphan. Today (2026-05-11) this triggered the
+         "MCP code-rag: Server disconnected" outage every 10 minutes
+         until reap was disabled.
+    The reaper still inventories MCPs (so operator tools see them) —
+    they just stay `is_orphan=False` here.
+
     Returns the same list, with fields populated.
     """
     expected_per_proc = {
@@ -450,6 +466,9 @@ def classify_orphans(procs: list[ProcessInfo]) -> list[ProcessInfo]:
     own_pids = {p.pid for p in procs}
     for p in procs:
         if p.kind is None:
+            continue
+        # Phase 60-U: MCP is reap-immune (see docstring above).
+        if p.kind == "mcp":
             continue
         expected = expected_per_proc[p.pid]
         if not expected:
