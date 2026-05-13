@@ -233,7 +233,46 @@ async def _run() -> int:
             # first read raises before the comparison runs. Read the underlying
             # `_dim` attribute (default 0) so the guard works.
             _raw_dim = getattr(embedder, "_dim", 0)
-            embedder_dim = _raw_dim if _raw_dim > 0 else 1
+            # Phase 60-W: when the embedder failed to probe (vLLM still
+            # cold-starting), DON'T fall through to dim=1. That synthetic
+            # value generates a collection name keyed by `hash("1")` which
+            # NEVER matches the saved index_meta (`hash("4096")` for our
+            # production model), and chroma rejects with "Index metadata
+            # mismatch ... embedder_dim 4096 != 1" -- bootstrap exits rc=3
+            # BEFORE the wipe detector + snapshot restore code runs. Result
+            # today: chroma was wiped overnight, the saved snapshot was
+            # never restored, and Claude Code's MCP search degraded to
+            # 562 vectors. Instead: read the saved meta and use ITS dim
+            # so the existing collection opens cleanly. The watcher's
+            # per-event reindex will re-probe via embedder.health() once
+            # vLLM is reachable.
+            embedder_dim = _raw_dim
+            if embedder_dim <= 0:
+                try:
+                    import json as _json
+                    if settings.index_meta_path.exists():
+                        _saved = _json.loads(
+                            settings.index_meta_path.read_text("utf-8")
+                        )
+                        embedder_dim = int(_saved.get("embedder_dim") or 0)
+                        if embedder_dim > 0:
+                            _plain_log(
+                                autostart_log,
+                                f"using saved index_meta dim={embedder_dim} "
+                                "(embedder not yet probed)",
+                            )
+                except (OSError, ValueError, KeyError) as _e:
+                    _plain_log(autostart_log,
+                               f"could not read saved meta dim: {_e}")
+            if embedder_dim <= 0:
+                # No saved meta either (first-ever boot with vLLM down).
+                # Bail cleanly so Task Scheduler retries when vLLM is up.
+                _plain_log(
+                    autostart_log,
+                    "no embedder dim available (vLLM down + no saved meta); "
+                    "deferring — will retry on next bootstrap"
+                )
+                return 5
             meta = ChromaVectorStore.build_meta(
                 embedder_kind=settings.embedder.kind,
                 embedder_model=embedder.model,
