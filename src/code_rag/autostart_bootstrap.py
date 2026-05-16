@@ -387,14 +387,55 @@ async def _run() -> int:
                     # Close chroma so file locks release.
                     with contextlib.suppress(Exception):
                         vec.close()
+                    # Phase 60-X: on Windows, vec.close() returns BEFORE the
+                    # OS actually releases the chroma.sqlite3 file handle.
+                    # chromadb's PersistentClient holds the SQLite connection
+                    # via a backend whose finalizer is deferred to GC. Without
+                    # the gc.collect() + brief sleep, the immediate shutil.move
+                    # hits WinError 32: "The process cannot access the file
+                    # because it is being used by another process." Observed
+                    # 2026-05-15 22:21:04 in production -- whole snapshot
+                    # restore path failed, fell through to 28-min re-vectorize.
+                    # Fix: force GC, sleep briefly, and retry the move on
+                    # transient PermissionError. ~99% of cases finish on
+                    # first try post-GC.
+                    import gc as _gc
                     import shutil as _sh
+                    import time as _t
+                    _gc.collect()
+                    _t.sleep(0.5)
                     # Move corrupt chroma out of the way (not delete -- preserve
-                    # for post-mortem) and copy the snapshot in.
+                    # for post-mortem) and copy the snapshot in. Retry the
+                    # move on PermissionError (Windows file-handle lag) up
+                    # to 5 attempts with exponential backoff (0.5, 1, 2, 4 s).
                     corrupt_dir = settings.paths.data_dir / (
                         f"chroma.corrupt.{int(datetime.now(UTC).timestamp())}"
                     )
                     if chroma_dir.exists():
-                        _sh.move(str(chroma_dir), str(corrupt_dir))
+                        _move_ok = False
+                        for _attempt, _wait in enumerate((0.0, 0.5, 1.0, 2.0, 4.0)):
+                            if _wait > 0:
+                                _t.sleep(_wait)
+                                _gc.collect()
+                            try:
+                                _sh.move(str(chroma_dir), str(corrupt_dir))
+                                _move_ok = True
+                                if _attempt > 0:
+                                    _plain_log(
+                                        autostart_log,
+                                        f"  snapshot move succeeded on retry #{_attempt}"
+                                    )
+                                break
+                            except PermissionError as _pe:
+                                if _attempt == 4:
+                                    raise
+                                _plain_log(
+                                    autostart_log,
+                                    f"  snapshot move blocked (retry "
+                                    f"{_attempt + 1}/5): {_pe}"
+                                )
+                        if not _move_ok:
+                            raise RuntimeError("snapshot move failed after retries")
                     _sh.copytree(str(chroma_bak), str(chroma_dir))
                     # Re-open chroma to verify the snapshot is healthy.
                     vec.open(meta)
